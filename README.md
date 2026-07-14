@@ -87,6 +87,58 @@ three tabs. Replay it anytime from the **Tutorial** button in the top-right
 Ontology lookups call the public [EBI OLS4](https://www.ebi.ac.uk/ols4/) API, so
 the import/gap features need an internet connection. Everything else is offline.
 
+## Run it with Claude Code
+
+### Option A — let Claude Code set it up (easiest)
+From inside your data-model repo, start Claude Code and paste a prompt like:
+
+```
+claude
+```
+> Add `https://github.com/nf-osi/linkml-model-editor` as a git submodule at `editor/`.
+> Look at how this repo's model is laid out and write a `model-editor.config.json`
+> for it (source dirs/files, header/prefixes file — or `format: "schematic-csv"` +
+> `csvModel` if the model is a DCA CSV). Install any missing prerequisites, then
+> `cd editor && npm install && npm start` and tell me the URL.
+
+Claude Code installs whatever's missing, inspects your layout, writes the config,
+and launches it.
+
+### Option B — manual
+**Prerequisites:** Node.js ≥ 18 and git. (For the in-app terminal, also
+[Claude Code](https://claude.com/claude-code): `npm install -g @anthropic-ai/claude-code`.)
+
+1. **Get the editor** (as a submodule in your model repo, recommended):
+   ```bash
+   git submodule add https://github.com/nf-osi/linkml-model-editor editor
+   ```
+   (or just `git clone` it standalone)
+2. **Point it at your model** — create `model-editor.config.json` at your repo root
+   (or in `editor/`). Copy a starting point from [`examples/`](examples/); no config
+   is needed if your repo already looks like NF (`header.yaml` + `modules/**`).
+
+   LinkML repo:
+   ```json
+   { "title": "My Model", "sourceFiles": ["header.yaml"], "sourceDirs": ["modules"] }
+   ```
+   Schematic/DCA CSV repo (auto-converts to editable LinkML on load):
+   ```json
+   { "title": "My Model", "format": "schematic-csv", "csvModel": "My.model.csv" }
+   ```
+3. **Run it:** `cd editor && npm install && npm start` (→ http://localhost:5174; set
+   `PORT=xxxx` to change).
+
+### Using Claude Code *inside* the app
+Click **Terminal** (top-right) to open a shell at your repo root, run `claude`, and
+ask for bulk/structural edits the GUI doesn't cover (e.g. *"rename enum `Foo` to
+`Bar` everywhere"*, *"add slot `platform` to every `Data_*` template"*). The app
+watches your model files and **live-reflects** those edits — graph, sidebar, and
+Changes tab update with no reload. Review with `git diff`; the editor never commits
+for you.
+
+> Run **several models at once** by giving each process its own
+> `MODEL_EDITOR_CONFIG=/path/to.json` and `PORT=xxxx`.
+
 ## The three tabs
 
 ### Graph Editor
