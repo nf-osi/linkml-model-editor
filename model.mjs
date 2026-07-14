@@ -57,8 +57,11 @@ export function loadModel() {
   const classes = {};
   const slots = {};
   const enums = {};
+  const types = {};
   let prefixes = {};
   const fileIndex = {};
+  const attrOwner = {}; // inline-attribute name -> [class names] (LinkML class-scoped slots)
+  const inlineOnly = new Set(); // slot names that exist ONLY as inline attributes (no top-level slot)
 
   for (const file of listSourceFiles()) {
     let doc;
@@ -71,7 +74,7 @@ export function loadModel() {
     if (!doc || typeof doc !== 'object') continue;
     const rel = relative(ROOT, file);
     if (doc.prefixes) prefixes = { ...prefixes, ...doc.prefixes };
-    for (const [kind, target] of [['classes', classes], ['slots', slots], ['enums', enums]]) {
+    for (const [kind, target] of [['classes', classes], ['slots', slots], ['enums', enums], ['types', types]]) {
       if (!doc[kind]) continue;
       for (const [name, def] of Object.entries(doc[kind])) {
         target[name] = def || {};
@@ -79,7 +82,15 @@ export function loadModel() {
       }
     }
   }
-  return { classes, slots, enums, prefixes, fileIndex };
+  // Inline `attributes:` are LinkML class-scoped slots. Surface them as slots so they
+  // appear in the graph/inspector; remember the owning class so edits target the right path.
+  for (const [cname, cdef] of Object.entries(classes)) {
+    for (const [aname, adef] of Object.entries(cdef?.attributes || {})) {
+      if (!slots[aname]) { slots[aname] = adef || {}; fileIndex[`slots:${aname}`] = fileIndex[`classes:${cname}`]; inlineOnly.add(aname); }
+      (attrOwner[aname] ??= []).push(cname);
+    }
+  }
+  return { classes, slots, enums, types, prefixes, fileIndex, attrOwner, inlineOnly };
 }
 
 /** Classify a range string as one of: enum | class | type | unknown. */
@@ -87,6 +98,7 @@ function classifyRange(range, model) {
   if (!range) return 'unknown';
   if (model.enums[range]) return 'enum';
   if (model.classes[range]) return 'class';
+  if (model.types && model.types[range]) return 'type';        // custom LinkML types
   if (PRIMITIVE_TYPES.has(String(range).toLowerCase())) return 'type';
   return 'unknown';
 }
@@ -123,10 +135,11 @@ export function buildGraph(model) {
     nodes.push({ data: {
       id: nid('class', name), kind: 'class', name,
       abstract: !!def.abstract,
+      mixin: !!def.mixin,
       label: name,
       description: def.description || '',
       file: model.fileIndex[`classes:${name}`] || null,
-      slotCount: (def.slots || []).length,
+      slotCount: (def.slots || []).length + Object.keys(def.attributes || {}).length,
     }});
   }
   for (const [name, def] of Object.entries(model.slots)) {
@@ -158,7 +171,8 @@ export function buildGraph(model) {
   for (const [name, def] of Object.entries(model.classes)) {
     const cid = nid('class', name);
     if (def.is_a && model.classes[def.is_a]) addEdge(cid, nid('class', def.is_a), 'is_a');
-    for (const slotName of def.slots || []) {
+    for (const mx of def.mixins || []) if (model.classes[mx]) addEdge(cid, nid('class', mx), 'mixin');
+    for (const slotName of [...(def.slots || []), ...Object.keys(def.attributes || {})]) {
       if (model.slots[slotName]) addEdge(cid, nid('slot', slotName), 'uses');
     }
     // slot_usage range overrides connect a class directly to an enum/class

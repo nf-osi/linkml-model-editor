@@ -31,6 +31,18 @@ function fileFor(kind, name) {
   return rel;
 }
 
+// Resolve where a slot edit should be written. Inline `attributes:` live under
+// `classes.<owner>.attributes.<name>`, not a top-level `slots:` block, so route there.
+function slotTarget(name) {
+  const model = loadModel();
+  if (model.inlineOnly?.has(name)) {
+    const owners = model.attrOwner[name] || [];
+    if (owners.length > 1) throw new Error(`"${name}" is an inline attribute shared by ${owners.length} classes (${owners.join(', ')}); edit it in the source or terminal.`);
+    if (owners.length === 1) return { rel: model.fileIndex[`classes:${owners[0]}`], path: ['classes', owners[0], 'attributes', name], attribute: true };
+  }
+  return { rel: model.fileIndex[`slots:${name}`], path: ['slots', name] };
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 5174;
@@ -52,10 +64,10 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => {
-  console.error(e);
-  res.status(500).json({ error: e.message });
-});
+const wrap = (fn) => async (req, res) => {
+  try { await fn(req, res); }
+  catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: e.message }); }
+};
 
 // ---- Model ----
 app.get('/api/summary', wrap((req, res) => res.json(modelSummary(loadModel()))));
@@ -79,8 +91,8 @@ app.patch('/api/:kind(classes|slots)/:name', wrap((req, res) => {
   const { kind, name } = req.params;
   const { field, value } = req.body || {};
   if (!field) return res.status(400).json({ error: 'missing field' });
-  const rel = fileFor(kind, name);
-  res.json({ ok: true, file: rel, ...setScalarField(rel, [kind, name], field, value) });
+  const t = kind === 'slots' ? slotTarget(name) : { rel: fileFor(kind, name), path: [kind, name] };
+  res.json({ ok: true, file: t.rel, attribute: !!t.attribute, ...setScalarField(t.rel, t.path, field, value) });
 }));
 
 // Edit a slot's contextual override (range / any_of / required) within a template.

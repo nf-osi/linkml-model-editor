@@ -253,6 +253,7 @@ function initGraph() {
       { selector: 'edge[type="is_a"]', style: { 'line-color': '#9aa193', 'line-style': 'dashed', 'target-arrow-color': '#9aa193' } },
       { selector: 'edge[type="range"]', style: { 'line-color': '#cf9e54', 'target-arrow-color': '#cf9e54' } },
       { selector: 'edge[type="usage"]', style: { 'line-color': '#b58a6f', 'line-style': 'dotted', 'target-arrow-color': '#b58a6f' } },
+      { selector: 'edge[type="mixin"]', style: { 'line-color': '#6a5acd', 'line-style': 'dashed', 'target-arrow-color': '#6a5acd' } },
     ],
   });
   STATE.cy.on('tap', 'node', (e) => { selectNode(e.target.id()); });        // highlight + inspect (no relayout)
