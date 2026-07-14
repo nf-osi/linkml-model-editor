@@ -27,6 +27,9 @@ const DEFAULTS = {
   convertToLinkml: true,
   // where generated LinkML lands (relative to root); header.yaml + modules/<module>.yaml
   linkmlOutDir: 'linkml',
+  // schematic-csv only: synthesize an is_a hierarchy (abstract bases grouping the flat
+  // manifest templates) so the converted model reads as a tree. false => leave flat.
+  synthesizeHierarchy: true,
   // repo root that holds the model source (relative to editor/'s parent, or absolute)
   root: '.',
   // top-level YAML files merged first (prefixes/defaults live here)

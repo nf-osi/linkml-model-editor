@@ -57,9 +57,13 @@ export function parseCsv(text) {
 const CURIE_RE = /^[A-Za-z][\w.]*:[A-Za-z0-9]/; // e.g. NCIT:C1234 (not a URL, not a bare word)
 const isCurie = (s) => CURIE_RE.test(s) && !/^https?:\/\//i.test(s);
 
+// Strip stray wrapping quotes / whitespace left by messy CSV quoting (e.g. a cell
+// like `...unknown"` yields a bogus value `unknown"`). Keeps interior characters.
+const cleanVal = (s) => String(s == null ? '' : s).trim().replace(/^["']+|["']+$/g, '').trim();
+
 function splitList(v) {
   if (!v) return [];
-  return v.split(',').map((x) => x.trim()).filter((x) => x && x.toLowerCase() !== 'component');
+  return v.split(',').map(cleanVal).filter((x) => x && x.toLowerCase() !== 'component');
 }
 
 const PRIMITIVE = { string: 'string', string_list: 'string', number: 'float', integer: 'integer', float: 'float', boolean: 'boolean' };
@@ -116,8 +120,10 @@ export function loadSchematicModel() {
     const pv = {};
     for (const v of inline) pv[v] = pv[v] || { description: '' };
     for (const cr of children) {
+      const key = cleanVal(cr.Attribute);
+      if (!key) continue;
       const src = cr.Source || '';
-      pv[cr.Attribute] = {
+      pv[key] = {
         description: cr.Description || '',
         ...(isCurie(src) ? { meaning: src } : src ? { source: src } : {}),
       };
@@ -157,6 +163,35 @@ export function loadSchematicModel() {
     };
     fileIndex[`classes:${t.Attribute}`] = rel;
     moduleIndex[`classes:${t.Attribute}`] = t.module || '';
+  }
+
+  // 5) Synthesize an is_a hierarchy. Schematic manifests are flat (no inheritance),
+  //    so a converted model shows as a disconnected row of classes rather than a tree
+  //    like other LinkML repos. Group templates by their leading name token under
+  //    abstract bases so the class hierarchy reads sensibly. (Config: synthesizeHierarchy.)
+  if (CONFIG.synthesizeHierarchy !== false && templates.length > 1) {
+    const pascal = (s) => s.replace(/[^A-Za-z0-9]+/g, ' ').trim().split(' ').filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join('');
+    const rootClass = 'MetadataTemplate';
+    const groups = {};
+    for (const t of templates) (groups[t.Attribute.split('_')[0] || 'other'] ??= []).push(t.Attribute);
+    let used = false;
+    const abstractsMod = templates[0]?.module || '';
+    const addAbstract = (name, description, isa) => {
+      if (classes[name]) return name; // avoid clobbering a real class
+      classes[name] = { abstract: true, description, ...(isa ? { is_a: isa } : {}) };
+      fileIndex[`classes:${name}`] = rel;
+      moduleIndex[`classes:${name}`] = abstractsMod;
+      return name;
+    };
+    for (const [lead, members] of Object.entries(groups)) {
+      if (members.length >= 2) {
+        if (!used) { addAbstract(rootClass, 'Abstract base for all curation manifest templates (synthesized during schematic → LinkML conversion).'); used = true; }
+        const gname = addAbstract(`${pascal(lead)}Template`, `Abstract grouping of ${lead} manifest templates (synthesized).`, rootClass);
+        for (const m of members) classes[m].is_a = gname;
+      }
+    }
+    // attach ungrouped (singleton-domain) templates directly under the root
+    if (used) for (const t of templates) if (!classes[t.Attribute].is_a) classes[t.Attribute].is_a = rootClass;
   }
 
   return { classes, slots, enums, prefixes: {}, fileIndex, moduleIndex };

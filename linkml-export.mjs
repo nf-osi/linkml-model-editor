@@ -27,6 +27,8 @@ function slotToLinkml(def) {
 }
 function classToLinkml(def, model) {
   const c = {};
+  if (def.is_a && model.classes[def.is_a]) c.is_a = def.is_a;
+  if (def.abstract) c.abstract = true;
   if (def.description) c.description = def.description;
   const cslots = (def.slots || []).filter((s) => model.slots[s]);
   if (cslots.length) c.slots = cslots;

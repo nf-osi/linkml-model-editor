@@ -141,21 +141,17 @@ export function buildGraph(model) {
     }});
   }
   for (const [name, def] of Object.entries(model.enums)) {
-    const pv = def.permissible_values || {};
-    const values = Object.entries(pv).map(([v, vdef]) => ({
-      value: v,
-      meaning: vdef?.meaning || null,
-      source: vdef?.source || null,
-      description: vdef?.description || '',
-    }));
+    // Values are intentionally NOT inlined here — some enums have 10k–100k values
+    // (e.g. ICD-10 / gene symbols) which would bloat the graph payload. Counts only;
+    // values are lazy-loaded per enum via GET /api/enums/:name/values.
+    const vals = Object.values(def.permissible_values || {});
     nodes.push({ data: {
       id: nid('enum', name), kind: 'enum', name,
       label: name,
       description: def.description || '',
       file: model.fileIndex[`enums:${name}`] || null,
-      valueCount: values.length,
-      mappedCount: values.filter(v => v.meaning).length,
-      values,
+      valueCount: vals.length,
+      mappedCount: vals.filter(v => v?.meaning).length,
     }});
   }
 

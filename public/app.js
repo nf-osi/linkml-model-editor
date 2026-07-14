@@ -231,7 +231,9 @@ function subsetFor(id) {
 const _mctx = document.createElement('canvas').getContext('2d');
 function labelAtoms(label) {
   const atoms = [];
-  for (const word of String(label || '').split(/\s+/).filter(Boolean)) {
+  // split on whitespace AND underscores/hyphens so snake_case names wrap as words
+  // (otherwise e.g. assay_ChIPSeq_metadata_template renders as one smushed run)
+  for (const word of String(label || '').split(/[\s_-]+/).filter(Boolean)) {
     const subs = word.match(/[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+/g) || [word];
     subs.forEach((s, i) => atoms.push({ text: s, glue: i > 0 })); // glue = no space before (mid-word)
   }
@@ -491,14 +493,58 @@ function renderSlotInspector(d) {
   setInspector([inspectorHead(d)], [body]);
 }
 
+// Page size for lazy value lists. Enums can have 100k+ values, so we fetch AND
+// render a page at a time (server-side filter + pagination) — never all of them.
+const VALUE_PAGE = 200;
+
+// Adjust an enum node's cached counts + graph badge after an edit (the full value
+// array is no longer held client-side, so we track deltas).
+function bumpEnumCounts(enumNode, dValues, dMapped) {
+  enumNode.valueCount = Math.max(0, (enumNode.valueCount || 0) + dValues);
+  enumNode.mappedCount = Math.max(0, (enumNode.mappedCount || 0) + dMapped);
+  if (STATE.cy) { const n = STATE.cy.getElementById(enumNode.id); if (n?.length) { n.data('valueCount', enumNode.valueCount); n.data('mappedCount', enumNode.mappedCount); } }
+}
+
+// A filterable, paginated value list backed by GET /api/enums/:name/values.
+// opts.unmapped => only values with no meaning. Never loads more than a page.
+function renderValueList(mountEl, enumNode, opts = {}) {
+  const search = el('input', { type: 'text', className: 'search', placeholder: 'filter by value or description…' });
+  const note = el('div', { className: 'muted', style: 'font-size:11.5px; margin:6px 0 8px' });
+  const rows = el('div', { className: 'val-rows' });
+  const moreBtn = el('button', { className: 'btn btn-sm', textContent: 'Load more' });
+  moreBtn.style.display = 'none';
+  let q = '', offset = 0, matched = 0, loading = false;
+  async function load(reset) {
+    if (loading) return; loading = true;
+    if (reset) { offset = 0; rows.replaceChildren(); }
+    const params = new URLSearchParams({ limit: String(VALUE_PAGE), offset: String(offset) });
+    if (q) params.set('q', q);
+    if (opts.unmapped) params.set('unmapped', '1');
+    try {
+      const r = await api('GET', `/api/enums/${encodeURIComponent(enumNode.name)}/values?${params}`);
+      matched = r.matched;
+      for (const v of r.values) rows.append(enumValueRow(enumNode, v));
+      offset += r.values.length;
+      const scope = q ? ' matches' : (opts.unmapped ? ' unmapped' : '');
+      note.textContent = matched ? `showing ${offset.toLocaleString()} of ${matched.toLocaleString()}${scope}` : `no${scope || ' values'}`;
+      moreBtn.style.display = offset < matched ? '' : 'none';
+    } catch (e) { note.textContent = e.message; }
+    loading = false;
+  }
+  let t; search.addEventListener('input', (e) => { clearTimeout(t); q = e.target.value.trim(); t = setTimeout(() => load(true), 200); });
+  moreBtn.addEventListener('click', () => load(false));
+  mountEl.append(search, note, rows, moreBtn);
+  load(true);
+}
+
 function renderEnumInspector(d) {
   const pct = d.valueCount ? Math.round((d.mappedCount / d.valueCount) * 100) : 0;
   const summary = el('p', { className: 'muted', style: 'font-size:12px; margin:0 0 10px', textContent: `${d.mappedCount}/${d.valueCount} values mapped to ontology terms (${pct}%).` });
   const addBtn = el('button', { className: 'btn btn-primary', style: 'width:100%', textContent: '＋ Add term (assisted)' });
   addBtn.addEventListener('click', () => openAddTerm(d.name));
-  const rows = el('div', { className: 'val-rows' });
-  for (const v of d.values) rows.append(enumValueRow(d, v));
-  setInspector([inspectorHead(d), summary, addBtn], [rows]);
+  const body = el('div', {});
+  setInspector([inspectorHead(d), summary, addBtn], [body]);
+  renderValueList(body, d);
 }
 
 function enumValueRow(enumNode, v) {
@@ -518,9 +564,7 @@ function enumValueRow(enumNode, v) {
     if (!confirm(`Remove “${v.value}” from ${enumNode.name}?\nThis deletes the permissible value from the source YAML (existing data using it would no longer validate).`)) return;
     try {
       await api('DELETE', `/api/enums/${encodeURIComponent(enumNode.name)}/value/${encodeURIComponent(v.value)}`);
-      const i = enumNode.values.findIndex((x) => x.value === v.value);
-      if (i >= 0) { if (enumNode.values[i].meaning) enumNode.mappedCount = Math.max(0, enumNode.mappedCount - 1); enumNode.values.splice(i, 1); enumNode.valueCount = Math.max(0, enumNode.valueCount - 1); }
-      const n = STATE.cy?.getElementById(enumNode.id); if (n?.length) { n.data('valueCount', enumNode.valueCount); n.data('mappedCount', enumNode.mappedCount); }
+      bumpEnumCounts(enumNode, -1, v.meaning ? -1 : 0);
       toast(`Removed “${v.value}”`, 'ok'); refreshChanges(); renderSidebar(); row.remove();
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -547,7 +591,8 @@ async function suggestFor(enumNode, v, container, meaningEl) {
           await ensurePrefix(r.curie, r.iri);
           await api('PATCH', `/api/enums/${encodeURIComponent(enumNode.name)}/value/${encodeURIComponent(v.value)}`, { field: 'meaning', val: r.curie });
           if (r.iri) await api('PATCH', `/api/enums/${encodeURIComponent(enumNode.name)}/value/${encodeURIComponent(v.value)}`, { field: 'source', val: r.iri }).catch(() => {});
-          v.meaning = r.curie; applyValueLocally(enumNode, v.value, r.curie);
+          if (!v.meaning) bumpEnumCounts(enumNode, 0, 1);
+          v.meaning = r.curie;
           meaningEl.innerHTML = `<span class="mapped">✓ ${r.curie}</span>`;
           container.replaceChildren();
           toast(`Mapped ${v.value} → ${r.curie}`, 'ok');
@@ -557,16 +602,6 @@ async function suggestFor(enumNode, v, container, meaningEl) {
       container.append(s);
     }
   } catch (e) { container.replaceChildren(el('div', { className: 'muted', textContent: e.message })); }
-}
-
-// update local model counts so stats/inspectors stay in sync
-function applyValueLocally(enumNode, value, meaning) {
-  let vobj = enumNode.values.find((x) => x.value === value);
-  if (!vobj) { vobj = { value, meaning: null, source: null, description: '' }; enumNode.values.push(vobj); enumNode.valueCount++; }
-  const wasMapped = !!vobj.meaning;
-  vobj.meaning = meaning;
-  if (meaning && !wasMapped) enumNode.mappedCount++;
-  if (STATE.cy) { const n = STATE.cy.getElementById(enumNode.id); if (n.length) n.data('mappedCount', enumNode.mappedCount); }
 }
 
 // ============================================================
@@ -581,11 +616,11 @@ async function loadGaps() {
     listEl.replaceChildren();
     const f = filter.toLowerCase();
     for (const g of gaps) {
-      if (onlyGaps && !g.missing.length) continue;
+      if (onlyGaps && !g.missingCount) continue;
       if (f && !g.enum.toLowerCase().includes(f)) continue;
       const item = el('div', { className: 'gap-item' },
         el('span', { className: 'gname', textContent: g.enum }),
-        el('span', { className: 'gcount', textContent: `${g.missing.length}/${g.total}` }));
+        el('span', { className: 'gcount', textContent: `${g.missingCount}/${g.total}` }));
       item.addEventListener('click', () => {
         $$('.gap-item').forEach((x) => x.classList.remove('active')); item.classList.add('active');
         renderGapDetail(g);
@@ -601,25 +636,21 @@ async function loadGaps() {
   if (want) { const g = gaps.find((x) => x.enum === want); if (g) renderGapDetail(g); }
 }
 
-const normLabel = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
 async function renderGapDetail(g) {
-  const enumNode = STATE.enumsByName.get(g.enum) || { name: g.enum, values: [], mappedCount: 0, valueCount: g.total, id: `enum::${g.enum}` };
+  const enumNode = STATE.enumsByName.get(g.enum) || { name: g.enum, mappedCount: 0, valueCount: g.total, id: `enum::${g.enum}` };
   const box = el('div', {});
   box.append(
     el('h2', { textContent: g.enum }),
-    el('p', { className: 'muted', textContent: `${enumNode.values.length || g.total} values · ${enumNode.mappedCount || 0} mapped to ontology terms. Compare to an ontology branch to find values you're missing.` }));
+    el('p', { className: 'muted', textContent: `${(enumNode.valueCount || g.total).toLocaleString()} values · ${enumNode.mappedCount || 0} mapped to ontology terms. Compare to an ontology branch to find values you're missing.` }));
 
-  // ---- present-membership index (rebuilt after adds) ----
-  let presentCuries, presentLabels;
-  const rebuildPresent = () => {
-    presentCuries = new Set((enumNode.values || []).filter((v) => v.meaning).map((v) => String(v.meaning).toLowerCase()));
-    presentLabels = new Set((enumNode.values || []).map((v) => normLabel(v.value)));
+  // Membership is computed server-side (POST /present) so we never load a 100k-value
+  // enum just to diff a branch of a few hundred terms against it.
+  const computeMissing = async (terms) => {
+    const payload = { terms: terms.map((t) => ({ key: t.curie || t.label, label: t.label, curie: t.curie, synonyms: t.synonyms || [] })) };
+    const { present } = await api('POST', `/api/enums/${encodeURIComponent(g.enum)}/present`, payload);
+    const presentSet = new Set(present);
+    return terms.filter((t) => t.curie && !presentSet.has(t.curie || t.label)).sort((a, b) => a.label.localeCompare(b.label));
   };
-  rebuildPresent();
-  const isPresent = (t) => (t.curie && presentCuries.has(t.curie.toLowerCase()))
-    || presentLabels.has(normLabel(t.label))
-    || (t.synonyms || []).some((s) => presentLabels.has(normLabel(s)));
 
   // ---- Section 1: find missing values ----
   const cov = el('div', { className: 'cov' });
@@ -672,8 +703,7 @@ async function renderGapDetail(g) {
     const ont = (root.ontology || ontF.value.trim() || '').toLowerCase();
     try {
       const { terms } = await api('GET', `/api/ontology/descendants?ontology=${encodeURIComponent(ont)}&iri=${encodeURIComponent(root.iri)}&direct=${depth === 'direct'}&size=400`);
-      rebuildPresent();
-      const missing = terms.filter((t) => t.curie && !isPresent(t)).sort((a, b) => a.label.localeCompare(b.label));
+      const missing = await computeMissing(terms);
       const presentN = terms.length - missing.length;
       renderMissing(root, ont, terms, missing, presentN);
     } catch (e) { missBox.replaceChildren(el('div', { className: 'cand-none', textContent: e.message })); }
@@ -724,26 +754,24 @@ async function renderGapDetail(g) {
         for (const t of picked) if (t.curie) await ensurePrefix(t.curie, t.iri);
         const values = picked.map((t) => ({ value: t.label, meaning: t.curie, source: t.iri, description: t.description || undefined }));
         const r = await api('POST', `/api/enums/${encodeURIComponent(g.enum)}/values`, { values });
-        (r.added || []).forEach((v) => { const t = picked.find((x) => x.label === v); applyValueLocally(enumNode, v, t?.curie || null); });
-        toast(`Added ${r.added?.length || 0} value${r.added?.length === 1 ? '' : 's'} → ${r.file}`, 'ok');
+        const added = r.added?.length || 0;
+        bumpEnumCounts(enumNode, added, added); // added values all carry a meaning
+        toast(`Added ${added} value${added === 1 ? '' : 's'} → ${r.file}`, 'ok');
         refreshChanges(); renderSidebar();
-        rebuildPresent();
-        loadBranch(root); // re-diff so added terms drop out of the missing list
+        loadBranch(root); // re-diff (server sees the new values) so added terms drop out
       } catch (e) { toast(e.message, 'err'); addSel.disabled = false; }
     });
     missBox.append(el('div', { className: 'cov-actions' }, selAll, selNone, el('span', { style: 'flex:1' }), addSel), list);
   }
 
   // ---- Section 2: fix mappings on existing unmapped values ----
-  if (g.missing?.length) {
+  const missingCount = g.missingCount || 0;
+  if (missingCount) {
     box.append(el('h3', { textContent: 'Unmapped existing values', style: 'margin-top:22px' }),
-      el('p', { className: 'muted', style: 'margin:-4px 0 10px;font-size:12px', textContent: `${g.missing.length} value${g.missing.length === 1 ? '' : 's'} have no meaning: mapping. Add one with Find mapping.` }));
-    const rows = el('div', { className: 'val-rows' });
-    for (const m of g.missing) {
-      const vobj = enumNode.values.find((x) => x.value === m.value) || { value: m.value, meaning: null, description: m.description };
-      rows.append(enumValueRow(enumNode, vobj));
-    }
-    box.append(rows);
+      el('p', { className: 'muted', style: 'margin:-4px 0 10px;font-size:12px', textContent: `${missingCount.toLocaleString()} value${missingCount === 1 ? '' : 's'} have no meaning: mapping. Filter to find one, then Find mapping.` }));
+    const mount = el('div', {});
+    box.append(mount);
+    renderValueList(mount, enumNode, { unmapped: true });
   }
 
   $('#gaps-detail').replaceChildren(box);
@@ -1136,26 +1164,32 @@ function openAddTerm(presetEnum) {
   if (presetEnum) refreshHint();
 
   let t;
-  const debounced = () => { clearTimeout(t); t = setTimeout(runSearch, 280); };
+  const SEARCH_ROWS = 25;              // #4: show more candidates than the old 12
+  let curRows = SEARCH_ROWS;
+  let searchSeq = 0;                   // #1: ignore out-of-order (stale) responses
+  const debounced = () => { clearTimeout(t); t = setTimeout(() => { curRows = SEARCH_ROWS; runSearch(); }, 280); };
   termInput.addEventListener('input', debounced);
   ontInput.addEventListener('input', debounced);
-  exactChk.addEventListener('change', runSearch);
+  exactChk.addEventListener('change', () => { curRows = SEARCH_ROWS; runSearch(); });
   async function runSearch() {
     const q = termInput.value.trim();
     chosen = null; preview.replaceChildren();
     if (!enumSel.value || q.length < 2) { candList.replaceChildren(); renderFoot(); return; }
+    const seq = ++searchSeq;
     searchWrap.classList.add('loading');
     try {
-      const params = new URLSearchParams({ q, ontology: ontInput.value.trim(), rows: '12' });
+      const params = new URLSearchParams({ q, ontology: ontInput.value.trim(), rows: String(curRows) });
       if (exactChk.checked) params.set('exact', 'true');
       const { results } = await api('GET', `/api/ontology/search?${params}`);
+      if (seq !== searchSeq) return;   // a newer search already fired — drop these
       renderCandidates(results, q);
-    } catch (e) { candList.replaceChildren(el('div', { className: 'cand-none', textContent: e.message })); }
-    finally { searchWrap.classList.remove('loading'); }
+    } catch (e) { if (seq === searchSeq) candList.replaceChildren(el('div', { className: 'cand-none', textContent: e.message })); }
+    finally { if (seq === searchSeq) searchWrap.classList.remove('loading'); }
   }
 
   function renderCandidates(results, q) {
     candList.replaceChildren();
+    const raw = results.length;
     results = results.filter((r) => r.curie);
     if (!results.length) {
       candList.append(el('div', { className: 'cand-none' },
@@ -1173,6 +1207,11 @@ function openAddTerm(presetEnum) {
       if (r.synonyms?.length) c.append(el('div', { className: 'cand-syn' }, el('b', { textContent: 'synonyms: ' }), r.synonyms.slice(0, 5).join(', ')));
       c.addEventListener('click', () => { chosen = r; $$('.cand', candList).forEach((x) => x.classList.remove('sel')); c.classList.add('sel'); renderPreview(r); });
       candList.append(c);
+    }
+    if (raw >= curRows) {   // likely more available — offer to fetch a bigger page
+      const more = el('button', { className: 'btn btn-sm', textContent: 'Show more results' });
+      more.addEventListener('click', () => { curRows += SEARCH_ROWS; runSearch(); });
+      candList.append(el('div', { style: 'padding-top:6px' }, more));
     }
     candList.append(el('div', { style: 'padding-top:6px' }, freeTextBtn(q)));
     renderFoot();
@@ -1236,7 +1275,7 @@ function openAddTerm(presetEnum) {
       const r = await api('POST', `/api/enums/${encodeURIComponent(enumSel.value)}/values`, { values: [value] });
       if (!r.added?.length) { toast(`"${state.value}" already exists`, 'err'); btn.disabled = false; btn.textContent = 'Add term'; return; }
       const node = STATE.enumsByName.get(enumSel.value);
-      if (node) applyValueLocally(node, state.value, chosen.curie || null);
+      if (node) bumpEnumCounts(node, 1, chosen.curie ? 1 : 0);
       toast(`Added “${state.value}” → ${r.file}`, 'ok');
       refreshChanges(); renderSidebar();
       // reset for add-another, keep enum selected

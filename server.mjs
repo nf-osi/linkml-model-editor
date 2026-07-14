@@ -44,8 +44,9 @@ app.use((req, res, next) => { if (req.method !== 'GET' && req.path.startsWith('/
 
 // Read-only models (e.g. schematic-csv): block every mutating API. The app is still
 // fully usable for viewing the graph and ontology-gap analysis; write-back isn't wired.
+const READONLY_SAFE = [/\/present$/]; // read-only computations that happen to use POST
 app.use('/api', (req, res, next) => {
-  if (CONFIG.readOnly && req.method !== 'GET') {
+  if (CONFIG.readOnly && req.method !== 'GET' && !READONLY_SAFE.some((re) => re.test(req.path))) {
     return res.status(409).json({ error: `This model is read-only in the editor (format: "${CONFIG.format}"). Editing isn't wired for ${CONFIG.format} models yet — use the app to explore the model and find ontology gaps.` });
   }
   next();
@@ -194,16 +195,70 @@ app.get('/api/gaps', wrap((req, res) => {
   for (const [name, def] of Object.entries(model.enums)) {
     if (wanted && name !== wanted) continue;
     const pv = def.permissible_values || {};
-    const missing = Object.entries(pv)
-      .filter(([, v]) => !(v && v.meaning))
-      .map(([value, v]) => ({ value, description: v?.description || '', hasSource: !!(v && v.source) }));
-    if (missing.length) {
+    const total = Object.keys(pv).length;
+    // Counts only — the full unmapped list can be ~100k for some enums and is
+    // lazy-loaded via GET /api/enums/:name/values when a gap detail is opened.
+    const missingCount = Object.values(pv).filter((v) => !(v && v.meaning)).length;
+    if (missingCount) {
       gaps.push({ enum: name, file: model.fileIndex[`enums:${name}`] || null,
-        total: Object.keys(pv).length, missing });
+        total, missingCount, mappedCount: total - missingCount });
     }
   }
-  gaps.sort((a, b) => b.missing.length - a.missing.length);
+  gaps.sort((a, b) => b.missingCount - a.missingCount);
   res.json({ gaps });
+}));
+
+// Paginated + filtered per-enum values (kept out of /api/graph and /api/gaps). Some
+// enums have 100k+ values, so the client fetches a page at a time instead of all of
+// them. Query: q (substring on value/meaning), unmapped=1, offset, limit.
+app.get('/api/enums/:name/values', wrap((req, res) => {
+  const model = loadModel();
+  const def = model.enums[req.params.name];
+  if (!def) return res.status(404).json({ error: `enum ${req.params.name} not found` });
+  const pv = def.permissible_values || {};
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const unmapped = req.query.unmapped === '1' || req.query.unmapped === 'true';
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 200));
+  let total = 0, mappedCount = 0, matched = 0;
+  const page = [];
+  for (const [value, v] of Object.entries(pv)) {
+    total++;
+    const meaning = v?.meaning || null;
+    if (meaning) mappedCount++;
+    if (unmapped && meaning) continue;
+    if (q && !(value.toLowerCase().includes(q) || String(meaning || '').toLowerCase().includes(q) || String(v?.description || '').toLowerCase().includes(q))) continue;
+    if (matched >= offset && page.length < limit) {
+      page.push({ value, meaning, source: v?.source || null, description: v?.description || '' });
+    }
+    matched++;
+  }
+  res.json({ values: page, total, matched, mappedCount, offset, limit });
+}));
+
+const normLabel = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Membership check for the gap diff: given the ontology branch terms, return which
+// are ALREADY present in the enum (by meaning CURIE or normalized label/synonym).
+// Done server-side so the client never has to load a 100k-value enum to compare.
+app.post('/api/enums/:name/present', wrap((req, res) => {
+  const model = loadModel();
+  const def = model.enums[req.params.name];
+  if (!def) return res.status(404).json({ error: `enum ${req.params.name} not found` });
+  const curies = new Set(), labels = new Set();
+  for (const [value, v] of Object.entries(def.permissible_values || {})) {
+    labels.add(normLabel(value));
+    if (v?.meaning) curies.add(String(v.meaning).toLowerCase());
+  }
+  const terms = Array.isArray(req.body?.terms) ? req.body.terms : [];
+  const present = [];
+  for (const t of terms) {
+    const hit = (t.curie && curies.has(String(t.curie).toLowerCase()))
+      || labels.has(normLabel(t.label))
+      || (Array.isArray(t.synonyms) && t.synonyms.some((s) => labels.has(normLabel(s))));
+    if (hit) present.push(t.key ?? t.curie ?? t.label);
+  }
+  res.json({ present });
 }));
 
 // ---- Model QC / linter (fast, model-aware; complements `linkml-lint`) ----
@@ -305,8 +360,11 @@ app.post('/api/prefixes', wrap((req, res) => {
   const { prefix, uri } = req.body || {};
   if (!prefix || !uri) return res.status(400).json({ error: 'need prefix and uri' });
   if (loadModel().prefixes?.[prefix]) return res.json({ ok: true, existed: true });
-  setScalarField('header.yaml', ['prefixes'], prefix, uri);
-  res.json({ ok: true, file: 'header.yaml' });
+  // Write to the configured header/prefixes file (not a hardcoded 'header.yaml' —
+  // e.g. converted models keep it at linkml/header.yaml). Skip gracefully if none.
+  if (!CONFIG.headerFile) return res.json({ ok: true, skipped: 'no headerFile configured' });
+  setScalarField(CONFIG.headerFile, ['prefixes'], prefix, uri);
+  res.json({ ok: true, file: CONFIG.headerFile });
 }));
 
 // ---- Add a slot to many templates at once ----
