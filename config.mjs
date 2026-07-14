@@ -22,6 +22,11 @@ const DEFAULTS = {
   format: 'linkml',
   // for format 'schematic-csv': path to the compiled model CSV (e.g. 'AD.model.csv')
   csvModel: null,
+  // schematic-csv only: convert to LinkML on load and edit the generated LinkML
+  // (read/write) instead of viewing the CSV read-only. Set false to keep read-only.
+  convertToLinkml: true,
+  // where generated LinkML lands (relative to root); header.yaml + modules/<module>.yaml
+  linkmlOutDir: 'linkml',
   // repo root that holds the model source (relative to editor/'s parent, or absolute)
   root: '.',
   // top-level YAML files merged first (prefixes/defaults live here)
@@ -52,7 +57,12 @@ const DEFAULTS = {
 };
 
 function loadConfig() {
-  const candidates = [resolve(EDITOR_PARENT, 'model-editor.config.json'), resolve(__dirname, 'model-editor.config.json')];
+  // MODEL_EDITOR_CONFIG lets one editor install serve different models per process
+  // (e.g. several dev servers on different ports). When set, it's the only config used.
+  const envCfg = process.env.MODEL_EDITOR_CONFIG;
+  const candidates = envCfg
+    ? [resolve(envCfg)]
+    : [resolve(EDITOR_PARENT, 'model-editor.config.json'), resolve(__dirname, 'model-editor.config.json')];
   let user = {};
   for (const p of candidates) {
     if (existsSync(p)) { try { user = JSON.parse(readFileSync(p, 'utf-8')); } catch (e) { console.warn(`[config] ignoring bad ${p}: ${e.message}`); } break; }

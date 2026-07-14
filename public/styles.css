@@ -414,5 +414,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--stamp); width: 15p
   font: 600 12px "IBM Plex Sans", system-ui, sans-serif; letter-spacing: .02em;
 }
 .ro-banner .ro-export:hover { filter: brightness(1.08); }
+.ro-banner.info { border-color: var(--leaf, #3f7a2e); border-left-color: var(--leaf, #3f7a2e); }
+.ro-banner.info.fade { opacity: 0; transition: opacity 1.2s ease; pointer-events: none; }
 body.read-only #add-term-btn,
 body.read-only #new-class-btn { display: none !important; }

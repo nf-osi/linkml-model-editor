@@ -95,6 +95,14 @@ function applyBranding(cfg) {
     b.append(msg, btn);
     document.body.appendChild(b);
   }
+  // Converted-on-load (schematic → LinkML): editable; note where the generated source lives.
+  if (cfg.convertedFrom && !document.querySelector('.ro-banner')) {
+    const b = document.createElement('div');
+    b.className = 'ro-banner info';
+    b.textContent = `Converted from ${cfg.convertedFrom.csv || 'schematic CSV'} → editing generated LinkML in ${cfg.convertedFrom.outDir}/. Edits write there; commit it to migrate this model to LinkML.`;
+    document.body.appendChild(b);
+    setTimeout(() => b.classList.add('fade'), 9000);
+  }
 }
 async function init() {
   STATE.config = await api('GET', '/api/config').catch(() => ({ title: 'Model', subtitle: '', features: { dca: true, dataType: true } }));

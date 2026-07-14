@@ -105,6 +105,7 @@ export function loadSchematicModel() {
   const slots = {};
   const enums = {};
   const fileIndex = {};
+  const moduleIndex = {}; // `${kind}:${name}` -> schematic `module` (for splitting a LinkML export)
 
   const enumNames = new Set();
   for (const r of rows) {
@@ -123,6 +124,7 @@ export function loadSchematicModel() {
     }
     enums[r.Attribute] = { description: r.Description || '', permissible_values: pv };
     fileIndex[`enums:${r.Attribute}`] = rel;
+    moduleIndex[`enums:${r.Attribute}`] = r.module || '';
   }
 
   // 3) Slots: manifest columns + any attribute referenced by a template's DependsOn,
@@ -142,6 +144,7 @@ export function loadSchematicModel() {
       ...((r.columnType || '').endsWith('_list') ? { multivalued: true } : {}),
     };
     fileIndex[`slots:${name}`] = rel;
+    moduleIndex[`slots:${name}`] = r.module || '';
   }
 
   // 4) Classes from templates; slots = DependsOn (minus Component/value tokens we know).
@@ -153,7 +156,8 @@ export function loadSchematicModel() {
       annotations: { ...(t.module ? { module: { value: t.module } } : {}), sourceFormat: { value: 'schematic-csv' } },
     };
     fileIndex[`classes:${t.Attribute}`] = rel;
+    moduleIndex[`classes:${t.Attribute}`] = t.module || '';
   }
 
-  return { classes, slots, enums, prefixes: {}, fileIndex };
+  return { classes, slots, enums, prefixes: {}, fileIndex, moduleIndex };
 }

@@ -13,7 +13,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, watch, mkdirSync, copyFileSync, rmSync } from 'fs';
+import { existsSync, watch, mkdirSync, copyFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { exec, execFile } from 'child_process';
 import { existsSync as fexists } from 'fs';
@@ -22,7 +22,7 @@ import { CONFIG } from './config.mjs';
 import { loadModel, buildGraph, modelSummary, readSourceFile, classifyRange, slotRanges, ROOT } from './model.mjs';
 import { setScalarField, addEnumValues, createEnum, createClass, addDcaEntry, addListItem, setSlotUsage, removeEnumValue } from './patch.mjs';
 import { searchOntology, getDescendants, getTerm, getParents, domainHint } from './ontology.mjs';
-import { toLinkMLYaml, slugify } from './linkml-export.mjs';
+import { toLinkMLYaml, toLinkMLFiles, slugify } from './linkml-export.mjs';
 
 const KINDS = { classes: 'classes', slots: 'slots', enums: 'enums' };
 function fileFor(kind, name) {
@@ -129,7 +129,7 @@ app.post('/api/enums/:name/values', wrap((req, res) => {
 // App config (title + which repo-specific features are enabled).
 app.get('/api/config', (req, res) => res.json({
   title: CONFIG.title, subtitle: CONFIG.subtitle, templateDir: CONFIG.templateDir,
-  format: CONFIG.format, readOnly: !!CONFIG.readOnly,
+  format: CONFIG.format, readOnly: !!CONFIG.readOnly, convertedFrom: CONFIG.convertedFrom || null,
   features: { dca: !!CONFIG.dcaConfig, dataType: !!(CONFIG.dataTypeEnums && CONFIG.dataTypeEnums.length) },
 }));
 
@@ -502,6 +502,39 @@ wss.on('connection', (ws) => {
   ws.on('close', () => { try { term.kill(); } catch {} });
 });
 
+// Convert-on-load: a schematic-CSV model is transformed into a modular LinkML repo
+// (header.yaml + modules/<module>.yaml) under linkmlOutDir, and the editor then runs
+// read/write on that generated LinkML — the migration path. Generated once; delete the
+// output dir to regenerate. Local edits to the generated LinkML are preserved on restart.
+function applySchematicConversion() {
+  if (CONFIG.format !== 'schematic-csv' || CONFIG.convertToLinkml === false) return;
+  const outDir = CONFIG.linkmlOutDir || 'linkml';
+  const headerAbs = resolve(ROOT, outDir, 'header.yaml');
+  if (!existsSync(headerAbs)) {
+    const files = toLinkMLFiles(loadModel(), CONFIG.title); // loadModel() is still schematic here
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = resolve(ROOT, outDir, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content);
+    }
+    console.log(`[migrate] converted schematic CSV → LinkML: ${outDir}/ (${Object.keys(files).length} files)`);
+  } else {
+    console.log(`[migrate] editing existing generated LinkML in ${outDir}/ (delete to regenerate from CSV)`);
+  }
+  // Switch the live config to edit the generated LinkML read/write.
+  CONFIG.convertedFrom = { format: 'schematic-csv', csv: CONFIG.csvModel, outDir };
+  CONFIG.format = 'linkml';
+  CONFIG.readOnly = false;
+  CONFIG.sourceFiles = [`${outDir}/header.yaml`];
+  CONFIG.sourceDirs = [`${outDir}/modules`];
+  CONFIG.headerFile = `${outDir}/header.yaml`;
+  CONFIG.templateDir = null;
+  CONFIG.dataTypeEnums = null;
+  CONFIG.dcaConfig = null;
+  CONFIG.modelPaths = [outDir];
+}
+applySchematicConversion();
+
 // Watch source files; push an SSE "changed" to clients on EXTERNAL edits only.
 let watchTimer = null;
 function notifyChanged() {
@@ -511,12 +544,13 @@ function notifyChanged() {
     for (const res of watchers) { try { res.write('data: changed\n\n'); } catch {} }
   }, 400);
 }
-try {
-  watch(resolve(ROOT, 'modules'), { recursive: true }, notifyChanged);
-  for (const f of ['header.yaml', 'dca-template-config.json']) {
-    const p = resolve(ROOT, f); if (existsSync(p)) watch(p, notifyChanged);
-  }
-} catch (e) { console.warn(`[watch] file watching disabled: ${e.message}`); }
+for (const rel of CONFIG.modelPaths || []) {
+  try {
+    const p = resolve(ROOT, rel);
+    if (!existsSync(p)) continue;
+    watch(p, { recursive: true }, notifyChanged);
+  } catch (e) { console.warn(`[watch] not watching ${rel}: ${e.message}`); }
+}
 
 server.listen(PORT, () => {
   console.log(`\n  ${CONFIG.title} — model editor — http://localhost:${PORT}`);
