@@ -418,3 +418,32 @@ input[type=checkbox], input[type=radio] { accent-color: var(--stamp); width: 15p
 .ro-banner.info.fade { opacity: 0; transition: opacity 1.2s ease; pointer-events: none; }
 body.read-only #add-term-btn,
 body.read-only #new-class-btn { display: none !important; }
+
+/* ---- Model Health ---- */
+.health-metrics { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.health-metric { font: 500 12px "IBM Plex Sans", system-ui, sans-serif; padding: 3px 10px; border-radius: 20px; background: #efe9dd; color: #4a443a; border: 1px solid rgba(24,33,28,.1); }
+.health-metric b { font-weight: 700; }
+.health-metric.good { background: #e6f0e2; color: #2f5a24; border-color: #bcd7b2; }
+.health-metric.mid  { background: #fbf1dc; color: #7a5a12; border-color: #e6d3a6; }
+.health-metric.low  { background: #f6e0dc; color: #8a2c1e; border-color: #e2b3aa; }
+.health-body { overflow: auto; padding: 14px 18px; }
+.health-cat { border: 1px solid rgba(24,33,28,.12); border-radius: 10px; margin: 0 0 10px; background: #fff; overflow: hidden; }
+.health-cat > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 12px 14px; font: 600 14px "IBM Plex Sans", system-ui, sans-serif; }
+.health-cat > summary::-webkit-details-marker { display: none; }
+.health-cat > summary:hover { background: #faf7f0; }
+.health-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.health-dot.error { background: #9a3324; } .health-dot.warn { background: #b9791a; } .health-dot.info { background: #3f7a2e; }
+.health-cat-label { flex: 1; }
+.health-count { font: 700 12px "IBM Plex Mono", monospace; background: #efe9dd; color: #4a443a; border-radius: 20px; padding: 2px 10px; }
+.health-help { padding: 0 14px 10px; font: 400 12px "IBM Plex Sans", system-ui, sans-serif; color: #6f685c; }
+.health-summary { padding: 0 14px 10px; font: 500 12.5px "IBM Plex Sans", system-ui, sans-serif; }
+.health-items { border-top: 1px solid rgba(24,33,28,.08); max-height: 420px; overflow: auto; }
+.health-item { display: flex; align-items: baseline; gap: 8px; padding: 7px 14px; border-bottom: 1px solid rgba(24,33,28,.05); font-size: 12.5px; }
+.health-item.clickable { cursor: pointer; }
+.health-item.clickable:hover { background: #faf7f0; }
+.hi-kind { font: 600 10px "IBM Plex Mono", monospace; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; flex: none; color: #fff; }
+.hi-kind.slot { background: #2e7d6e; } .hi-kind.class { background: #2e4c8c; } .hi-kind.enum { background: #b9791a; } .hi-kind.bundle { background: #6a5acd; }
+.hi-kind:not(.slot):not(.class):not(.enum):not(.bundle) { background: #9a3324; }
+.hi-name { font-weight: 600; color: #23201c; }
+.hi-detail { color: #6f685c; flex: 1; }
+.hi-file { color: #9a927f; font: 400 11px "IBM Plex Mono", monospace; }

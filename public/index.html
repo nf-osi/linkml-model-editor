@@ -22,6 +22,7 @@
     </div>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="graph" role="tab">Graph Editor</button>
+      <button class="tab" data-view="health" role="tab">Model Health</button>
       <button class="tab" data-view="gaps" role="tab">Ontology Gaps</button>
       <button class="tab" data-view="import" role="tab">Import Ontology</button>
       <button class="tab" data-view="changes" role="tab">Changes</button>
@@ -71,6 +72,20 @@
   </main>
 
   <!-- ============ ONTOLOGY GAPS ============ -->
+  <main class="view" id="view-health">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Model health</h2>
+        <p>Completeness &amp; consistency of the model — untyped slots, missing descriptions/units, naming drift, duplicated slot bundles, and validation-blocking problems. Click any finding to jump to it and fix it in place.</p>
+        <div class="gaps-controls">
+          <button class="btn btn-sm" id="health-refresh">Refresh</button>
+          <span id="health-metrics" class="health-metrics"></span>
+        </div>
+      </div>
+      <div id="health-body" class="health-body"><div class="inspector-empty">Loading…</div></div>
+    </div>
+  </main>
+
   <main class="view" id="view-gaps">
     <div class="panel">
       <div class="panel-head">

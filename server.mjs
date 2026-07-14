@@ -319,6 +319,87 @@ function runQc(model) {
 }
 app.get('/api/qc', wrap((req, res) => res.json(runQc(loadModel()))));
 
+// ---- Model Health: actionable completeness + consistency dashboard ----
+const NUMERIC_RANGE = new Set(['integer', 'float', 'double', 'decimal']);
+function modelHealth(model) {
+  const CAP = 300; // cap items shipped per category; UI notes truncation
+  const cats = [];
+  const push = (key, label, severity, help, items, extra = {}) => {
+    if (!items.length && !extra.count) return;
+    cats.push({ key, label, severity, help, count: extra.count ?? items.length, truncated: items.length > CAP, items: items.slice(0, CAP), ...extra });
+  };
+  const fx = (kind, name) => `${kind}::${name}`;
+  const slots = Object.entries(model.slots);
+  const classes = Object.entries(model.classes);
+  const enums = Object.entries(model.enums);
+
+  // Untyped slots (no explicit range → default string)
+  const untyped = slots.filter(([, d]) => !d.range && !(Array.isArray(d.any_of) && d.any_of.some((a) => a && a.range)))
+    .map(([n]) => ({ name: n, kind: 'slot', file: model.fileIndex[`slots:${n}`], detail: 'no range → defaults to string', focus: fx('slot', n) }));
+  push('untyped', 'Untyped slots', 'warn', 'Slots with no explicit range fall back to string. Give them an enum, class, or scalar type.', untyped);
+
+  // Missing descriptions (classes / slots / enums)
+  const noDesc = [];
+  for (const [n, d] of classes) if (!d.description) noDesc.push({ name: n, kind: 'class', file: model.fileIndex[`classes:${n}`], focus: fx('class', n) });
+  for (const [n, d] of slots) if (!d.description) noDesc.push({ name: n, kind: 'slot', file: model.fileIndex[`slots:${n}`], focus: fx('slot', n) });
+  for (const [n, d] of enums) if (!d.description) noDesc.push({ name: n, kind: 'enum', file: model.fileIndex[`enums:${n}`], focus: fx('enum', n) });
+  push('description', 'Missing descriptions', 'info', 'Classes, slots, and value sets without a description are hard for curators to use.', noDesc);
+
+  // Numeric slots without a unit
+  const noUnit = slots.filter(([, d]) => NUMERIC_RANGE.has(String(d.range || '').toLowerCase()) && !d.unit && !d.annotations?.unit)
+    .map(([n]) => ({ name: n, kind: 'slot', file: model.fileIndex[`slots:${n}`], detail: 'numeric slot with no unit', focus: fx('slot', n) }));
+  push('units', 'Numeric slots missing units', 'info', 'Measurement slots should declare a unit (e.g. UCUM) so values are interpretable.', noUnit);
+
+  // Naming inconsistency: flag slots that break the model's dominant style
+  const names = slots.map(([n]) => n);
+  const snake = names.filter((n) => n.includes('_')).length;
+  const dominantFrac = names.length ? Math.max(snake, names.length - snake) / names.length : 1;
+  // Only flag outliers when there's a strong majority style; mixed-convention models
+  // (e.g. NMDC) shouldn't drown in false positives.
+  if (names.length >= 12 && dominantFrac >= 0.9) {
+    const majSnake = snake > names.length - snake;
+    const out = names.filter((n) => n.includes('_') !== majSnake)
+      .map((n) => ({ name: n, kind: 'slot', file: model.fileIndex[`slots:${n}`], detail: `doesn't match the ${majSnake ? 'snake_case' : 'camelCase'} majority`, focus: fx('slot', n) }));
+    push('naming', 'Naming inconsistencies', 'info', 'Slots that don’t match the model’s dominant naming style.', out);
+  }
+
+  // Duplicated slot bundles (candidates for a shared base / mixin)
+  const slotClasses = {};
+  for (const [cn, d] of classes) for (const s of d.slots || []) (slotClasses[s] ??= []).push(cn);
+  const bundles = {};
+  for (const [s, cls] of Object.entries(slotClasses)) {
+    if (cls.length < 2) continue;
+    (bundles[[...new Set(cls)].sort().join('|')] ??= []).push(s);
+  }
+  const dup = Object.entries(bundles).filter(([, ss]) => ss.length >= 3).map(([key, ss]) => {
+    const cls = key.split('|');
+    return { name: `${ss.length} slots shared by ${cls.length} classes`, kind: 'bundle', detail: `${ss.slice(0, 6).join(', ')}${ss.length > 6 ? '…' : ''} — in ${cls.slice(0, 4).join(', ')}${cls.length > 4 ? '…' : ''}`, focus: fx('class', cls[0]) };
+  });
+  push('dedup', 'Duplicated slot bundles', 'info', 'Groups of slots repeated across classes — candidates for a shared parent or mixin.', dup);
+
+  // Unmapped values → summary linking to the Ontology Gaps tab
+  let unmapped = 0, gappy = 0;
+  for (const [, d] of enums) { const u = Object.values(d.permissible_values || {}).filter((v) => !(v && v.meaning)).length; if (u) { unmapped += u; gappy++; } }
+  if (unmapped) push('mapping', 'Unmapped values', 'info', 'Values with no ontology meaning: mapping. Fix them in the Ontology Gaps tab.', [], { count: unmapped, link: 'gaps', summary: `${unmapped} unmapped values across ${gappy} value sets` });
+
+  // Structural problems (reuse the QC engine)
+  const STRUCT = new Set(['undeclared-prefix', 'unknown-range', 'usage-range', 'missing-slot', 'missing-parent', 'template-datatype', 'invalid-datatype', 'empty-enum', 'url-meaning']);
+  const structural = runQc(model).findings.filter((f) => STRUCT.has(f.kind))
+    .map((f) => ({ name: f.entity || f.kind, kind: f.kind, file: f.file, detail: f.message, focus: f.entity && model.classes[f.entity] ? fx('class', f.entity) : (f.entity && model.enums[f.entity] ? fx('enum', f.entity) : undefined) }));
+  push('structural', 'Structural problems', 'error', 'Broken references, undeclared prefixes, and validation-blocking issues.', structural);
+
+  const totalVals = enums.reduce((a, [, d]) => a + Object.keys(d.permissible_values || {}).length, 0);
+  const metrics = {
+    slots: slots.length,
+    typedPct: slots.length ? Math.round((100 * (slots.length - untyped.length)) / slots.length) : 100,
+    describedPct: (classes.length + slots.length + enums.length) ? Math.round((100 * (classes.length + slots.length + enums.length - noDesc.length)) / (classes.length + slots.length + enums.length)) : 100,
+    values: totalVals,
+    mappedPct: totalVals ? Math.round((100 * (totalVals - unmapped)) / totalVals) : 100,
+  };
+  return { metrics, categories: cats.sort((a, b) => ({ error: 0, warn: 1, info: 2 }[a.severity] - { error: 0, warn: 1, info: 2 }[b.severity])) };
+}
+app.get('/api/health', wrap((req, res) => res.json(modelHealth(loadModel()))));
+
 // ---- Ontology (OLS4) ----
 app.get('/api/ontology/search', wrap(async (req, res) => {
   const { q, ontology = '', rows, exact, branches } = req.query;

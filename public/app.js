@@ -148,6 +148,7 @@ function renderStats(s) {
 function showView(view) {
   $$('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
+  if (view === 'health') loadHealth();
   if (view === 'gaps') loadGaps();
   if (view === 'changes') loadDiff();
   if (view === 'issues') loadIssues();
@@ -157,7 +158,65 @@ function showView(view) {
 function initTabs() {
   $$('.tab').forEach((btn) => btn.addEventListener('click', () => showView(btn.dataset.view)));
   const hashView = location.hash.slice(1);
-  if (['graph', 'gaps', 'import'].includes(hashView)) showView(hashView);
+  if (['graph', 'health', 'gaps', 'import'].includes(hashView)) showView(hashView);
+}
+
+// ============================================================
+//  MODEL HEALTH
+// ============================================================
+let healthInit = false, healthLoaded = false;
+async function loadHealth(force) {
+  const body = $('#health-body');
+  if (!healthInit) { healthInit = true; $('#health-refresh').addEventListener('click', () => loadHealth(true)); }
+  if (healthLoaded && !force) return;
+  healthLoaded = true;
+  body.replaceChildren(el('div', { className: 'muted', style: 'padding:14px', textContent: 'Analyzing model…' }));
+  try { renderHealth(await api('GET', '/api/health')); }
+  catch (e) { body.replaceChildren(el('div', { className: 'muted', style: 'padding:14px', textContent: e.message })); }
+}
+function renderHealth({ metrics, categories }) {
+  const m = metrics || {};
+  $('#health-metrics').replaceChildren(
+    healthChip(`${m.typedPct}%`, 'slots typed', m.typedPct),
+    healthChip(`${m.describedPct}%`, 'described', m.describedPct),
+    healthChip(`${m.mappedPct}%`, 'values mapped', m.mappedPct));
+  const body = $('#health-body');
+  body.replaceChildren();
+  if (!categories.length) { body.append(el('div', { className: 'inspector-empty', textContent: '✓ No issues found — the model looks healthy.' })); return; }
+  for (const c of categories) {
+    const det = el('details', { className: `health-cat health-${c.severity}` });
+    if (c.severity === 'error') det.open = true;
+    const sum = el('summary', {},
+      el('span', { className: `health-dot ${c.severity}` }),
+      el('span', { className: 'health-cat-label', textContent: c.label }),
+      el('span', { className: 'health-count', textContent: String(c.count) }));
+    det.append(sum, el('div', { className: 'health-help', textContent: c.help }));
+    if (c.summary) det.append(el('div', { className: 'health-summary', textContent: c.summary }));
+    if (c.link === 'gaps') {
+      const b = el('button', { className: 'btn btn-sm', textContent: 'Open Ontology Gaps →' });
+      b.addEventListener('click', () => showView('gaps'));
+      det.append(el('div', { style: 'padding:4px 12px 12px' }, b));
+    }
+    if (c.items?.length) {
+      const list = el('div', { className: 'health-items' });
+      for (const it of c.items) {
+        const row = el('div', { className: 'health-item' + (it.focus ? ' clickable' : '') },
+          el('span', { className: `hi-kind ${it.kind}`, textContent: it.kind }),
+          el('span', { className: 'hi-name', textContent: it.name }),
+          it.detail ? el('span', { className: 'hi-detail', textContent: it.detail }) : '',
+          it.file ? el('span', { className: 'hi-file', textContent: it.file }) : '');
+        if (it.focus) row.addEventListener('click', () => { showView('graph'); focusEntity(it.focus); });
+        list.append(row);
+      }
+      det.append(list);
+      if (c.truncated) det.append(el('div', { className: 'health-help', textContent: `Showing first ${c.items.length} of ${c.count}.` }));
+    }
+    body.append(det);
+  }
+}
+function healthChip(big, label, pct) {
+  const tone = pct >= 90 ? 'good' : pct >= 60 ? 'mid' : 'low';
+  return el('span', { className: `health-metric ${tone}` }, el('b', { textContent: big }), document.createTextNode(' ' + label));
 }
 
 // ============================================================
@@ -1332,7 +1391,7 @@ function openApplySlot(slotName) {
 // ============================================================
 function initBuildBar() {
   $$('#build-bar [data-run]').forEach((btn) => btn.addEventListener('click', () => runTask(btn.dataset.run, btn)));
-  $('#qc-btn').addEventListener('click', showQc);
+  $('#qc-btn').addEventListener('click', () => showView('health'));
   refreshChanges();
 }
 async function refreshChanges() {
