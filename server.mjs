@@ -20,7 +20,7 @@ import { existsSync as fexists } from 'fs';
 import { resolve as rpath } from 'path';
 import { CONFIG } from './config.mjs';
 import { loadModel, buildGraph, modelSummary, readSourceFile, classifyRange, slotRanges, ROOT } from './model.mjs';
-import { setScalarField, addEnumValues, createEnum, createClass, addDcaEntry, addListItem, setSlotUsage, removeEnumValue } from './patch.mjs';
+import { setScalarField, addEnumValues, createEnum, createClass, addDcaEntry, addListItem, removeListItem, createDynamicEnum, setSlotUsage, removeEnumValue } from './patch.mjs';
 import { searchOntology, getDescendants, getTerm, getParents, domainHint } from './ontology.mjs';
 import { toLinkMLYaml, toLinkMLFiles, slugify } from './linkml-export.mjs';
 
@@ -86,13 +86,31 @@ app.get('/api/entity/:kind/:name', wrap((req, res) => {
   res.json({ kind, name, def: map[name], file: model.fileIndex[`${kind}:${name}`] || null });
 }));
 
+// Coerce edit values to the right YAML type: booleans, numbers (min/max), and
+// empty→SKIP (no-op) for numerics. Everything else stays a string.
+const SKIP = Symbol('skip');
+const BOOL_FIELDS = new Set(['required', 'identifier', 'key', 'abstract', 'multivalued', 'recommended']);
+const NUM_FIELDS = new Set(['minimum_value', 'maximum_value']);
+function coerceField(field, value) {
+  if (BOOL_FIELDS.has(field)) return value === true || value === 'true';
+  if (NUM_FIELDS.has(field)) {
+    if (value === '' || value == null) return SKIP;
+    const n = Number(value);
+    if (Number.isNaN(n)) throw new Error(`${field} must be a number`);
+    return n;
+  }
+  return value;
+}
+
 // Set a single scalar field on a slot or class (range, required, description, title, is_a, abstract).
 app.patch('/api/:kind(classes|slots)/:name', wrap((req, res) => {
   const { kind, name } = req.params;
   const { field, value } = req.body || {};
   if (!field) return res.status(400).json({ error: 'missing field' });
+  const v = coerceField(field, value);
+  if (v === SKIP) return res.json({ ok: true, noop: true });
   const t = kind === 'slots' ? slotTarget(name) : { rel: fileFor(kind, name), path: [kind, name] };
-  res.json({ ok: true, file: t.rel, attribute: !!t.attribute, ...setScalarField(t.rel, t.path, field, value) });
+  res.json({ ok: true, file: t.rel, attribute: !!t.attribute, ...setScalarField(t.rel, t.path, field, v) });
 }));
 
 // Edit a slot's contextual override (range / any_of / required) within a template.
@@ -112,6 +130,24 @@ app.post('/api/classes/:name/slot', wrap((req, res) => {
   if (!slot) return res.status(400).json({ error: 'missing slot' });
   const rel = fileFor('classes', name);
   res.json({ ok: true, file: rel, ...addListItem(rel, ['classes', name, 'slots'], slot) });
+}));
+
+// Add/remove an item on a list field (aliases, exact_mappings, close_mappings, …)
+// of a class/slot/enum. Routes inline-attribute slots to their class.
+app.post('/api/list', wrap((req, res) => {
+  const { kind, name, field, item, op } = req.body || {};
+  if (!kind || !name || !field || !item) return res.status(400).json({ error: 'need kind, name, field, item' });
+  const t = kind === 'slots' ? slotTarget(name) : { rel: fileFor(kind, name), path: [kind, name] };
+  const segs = [...t.path, field];
+  const r = op === 'remove' ? removeListItem(t.rel, segs, item) : addListItem(t.rel, segs, item);
+  res.json({ ok: true, file: t.rel, ...r });
+}));
+
+// Create a dynamic enum bound to an ontology branch (LinkML reachable_from).
+app.post('/api/enums/dynamic', wrap((req, res) => {
+  const { name, file, description, source_ontology, source_nodes, relationship_types, is_direct } = req.body || {};
+  if (!name || !file) return res.status(400).json({ error: 'need name and file' });
+  res.json({ ok: true, ...createDynamicEnum(file, name, { description, source_ontology, source_nodes, relationship_types, is_direct }) });
 }));
 
 // Set/insert a field (meaning, source, description) on one enum permissible value.
@@ -241,7 +277,7 @@ app.get('/api/enums/:name/values', wrap((req, res) => {
     if (unmapped && meaning) continue;
     if (q && !(value.toLowerCase().includes(q) || String(meaning || '').toLowerCase().includes(q) || String(v?.description || '').toLowerCase().includes(q))) continue;
     if (matched >= offset && page.length < limit) {
-      page.push({ value, meaning, source: v?.source || null, description: v?.description || '' });
+      page.push({ value, meaning, source: v?.source || null, description: v?.description || '', deprecated: v?.deprecated || '' });
     }
     matched++;
   }
@@ -401,7 +437,14 @@ function modelHealth(model) {
   push('structural', 'Structural problems', 'error', 'Broken references, undeclared prefixes, and validation-blocking issues.', structural);
 
   const totalVals = enums.reduce((a, [, d]) => a + Object.keys(d.permissible_values || {}).length, 0);
+  const MP = ['exact_mappings', 'close_mappings', 'narrow_mappings', 'broad_mappings', 'related_mappings', 'mappings'];
+  let semanticMappings = 0;
+  for (const [, d] of [...classes, ...slots, ...enums]) {
+    for (const p of MP) if (Array.isArray(d[p])) semanticMappings += d[p].length;
+    if (d.class_uri || d.slot_uri) semanticMappings++;
+  }
   const metrics = {
+    semanticMappings,
     slots: slots.length,
     typedPct: slots.length ? Math.round((100 * (slots.length - untyped.length)) / slots.length) : 100,
     describedPct: (classes.length + slots.length + enums.length) ? Math.round((100 * (classes.length + slots.length + enums.length - noDesc.length)) / (classes.length + slots.length + enums.length)) : 100,

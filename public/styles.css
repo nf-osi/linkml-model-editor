@@ -447,3 +447,24 @@ body.read-only #new-class-btn { display: none !important; }
 .hi-name { font-weight: 600; color: #23201c; }
 .hi-detail { color: #6f685c; flex: 1; }
 .hi-file { color: #9a927f; font: 400 11px "IBM Plex Mono", monospace; }
+
+/* ---- Tier 2/3 inspector UI (constraints, chips, mappings, rules, deprecate) ---- */
+.insp-sec { margin: 14px 0 6px; border-top: 1px solid var(--rule); padding-top: 10px; }
+.insp-sec-h { font: 600 10.5px/1 "IBM Plex Sans", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .12em; color: var(--faint); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 5px; background: #eef0e9; border: 1px solid var(--rule-2); border-radius: 20px; padding: 2px 4px 2px 10px; font-size: 12px; }
+.chip.readonly { padding: 2px 10px; }
+.chip.readonly.clickable { cursor: pointer; }
+.chip.readonly.clickable:hover { background: #e2e6db; }
+.chip-x { border: 0; background: #d7dccc; color: #4a443a; border-radius: 50%; width: 16px; height: 16px; line-height: 1; cursor: pointer; font-size: 12px; }
+.chip-x:hover { background: var(--stamp); color: #fff; }
+.chip-add { border: 1px dashed var(--rule-2); border-radius: 20px; padding: 3px 10px; font: inherit; font-size: 12px; min-width: 90px; background: transparent; }
+.chip-add:focus { outline: none; border-color: var(--stamp); border-style: solid; }
+.map-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.map-lbl { font: 600 10.5px "IBM Plex Mono", monospace; text-transform: uppercase; color: var(--faint); min-width: 52px; }
+.rules { display: flex; flex-direction: column; gap: 6px; }
+.rule { font-size: 12px; background: #f6f3ec; border-left: 3px solid var(--enum); padding: 6px 10px; border-radius: 0 4px 4px 0; }
+.enum-meta { margin: 8px 0; border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; }
+.enum-meta > summary { cursor: pointer; font-size: 12px; color: var(--ink-soft); }
+.val-row.deprecated { opacity: .6; }
+.dep-badge { margin-left: 6px; font: 600 9.5px "IBM Plex Mono", monospace; text-transform: uppercase; background: #e6d3a6; color: #7a5a12; border-radius: 3px; padding: 1px 5px; }

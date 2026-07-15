@@ -309,8 +309,18 @@ export function addListItem(rel, segs, item) {
   if (text == null) throw new Error(`file not found: ${rel}`);
   const trailingNL = text.endsWith('\n');
   const lines = text.replace(/\n$/, '').split('\n');
-  const keyIdx = findPath(lines, segs);
-  if (keyIdx < 0) throw new Error(`path not found: ${segs.join(' > ')}`);
+  let keyIdx = findPath(lines, segs);
+  if (keyIdx < 0) {
+    // the list key (e.g. aliases:, exact_mappings:) doesn't exist yet — create it
+    // under its parent entity, then add the item below.
+    const parent = segs.slice(0, -1);
+    const pIdx = findPath(lines, parent);
+    if (pIdx < 0) throw new Error(`path not found: ${segs.join(' > ')}`);
+    const fieldIndent = childIndent(lines, pIdx);
+    const at = blockEnd(lines, pIdx);
+    lines.splice(at, 0, ' '.repeat(fieldIndent) + `${quoteKey(segs[segs.length - 1])}:`);
+    keyIdx = at;
+  }
   const end = blockEnd(lines, keyIdx);
   // detect existing list-item indent & whether item already present
   let itemIndent = null;
@@ -324,6 +334,64 @@ export function addListItem(rel, segs, item) {
   lines.splice(end, 0, ' '.repeat(itemIndent) + `- ${item}`);
   save(abs, trailingNL ? [...lines, ''] : lines);
   return { changed: true };
+}
+
+/** Remove one item from a YAML list at `segs`; drops the now-empty list key.
+ *  Handles both nested (items indented under the key) and flush (items at the
+ *  key's own indent — the repo's default) block sequences. */
+export function removeListItem(rel, segs, item) {
+  const { abs, text } = load(rel);
+  if (text == null) throw new Error(`file not found: ${rel}`);
+  const trailingNL = text.endsWith('\n');
+  const lines = text.replace(/\n$/, '').split('\n');
+  const keyIdx = findPath(lines, segs);
+  if (keyIdx < 0) return { changed: false };
+  const keyIndent = indentOf(lines[keyIdx]);
+  // walk the key's item region: list items at indent >= keyIndent, or deeper nested lines
+  const items = [];
+  for (let i = keyIdx + 1; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln.trim() === '') continue;
+    const ind = indentOf(ln);
+    if (isListItem(ln) && ind >= keyIndent) items.push(i);
+    else if (ind > keyIndent) continue; // nested content of an item
+    else break; // sibling key / dedent → end of this list
+  }
+  const target = items.find((i) => lines[i].trim().replace(/^-\s*/, '') === String(item));
+  if (target == null) return { changed: false };
+  lines.splice(target, 1);
+  if (items.length === 1) lines.splice(keyIdx, 1); // was the only item → drop the empty key
+  save(abs, trailingNL ? [...lines, ''] : lines);
+  return { changed: true };
+}
+
+/** Create a dynamic enum bound to an ontology branch (LinkML reachable_from). */
+export function createDynamicEnum(rel, enumName, { description = '', source_ontology, source_nodes = [], relationship_types = ['rdfs:subClassOf'], is_direct = false } = {}) {
+  const { abs, text } = load(rel);
+  const i2 = 2, i4 = 4, i6 = 6, i8 = 8;
+  const body = [' '.repeat(i2) + `${quoteKey(enumName)}:`];
+  if (description) body.push(' '.repeat(i4) + `description: ${fmtScalar(description)}`);
+  body.push(' '.repeat(i4) + `reachable_from:`);
+  if (source_ontology) body.push(' '.repeat(i6) + `source_ontology: ${fmtScalar(source_ontology)}`);
+  body.push(' '.repeat(i6) + `source_nodes:`);
+  for (const n of source_nodes) body.push(' '.repeat(i8) + `- ${n}`);
+  body.push(' '.repeat(i6) + `relationship_types:`);
+  for (const r of relationship_types) body.push(' '.repeat(i8) + `- ${r}`);
+  body.push(' '.repeat(i6) + `is_direct: ${is_direct ? 'true' : 'false'}`);
+
+  if (text == null) { save(abs, ['enums:', ...body, '']); return { created: true, file: rel }; }
+  const trailingNL = text.endsWith('\n');
+  const lines = text.replace(/\n$/, '').split('\n');
+  const enumsIdx = findTopKey(lines, 'enums');
+  if (enumsIdx < 0) {
+    const add = (lines.length && lines[lines.length - 1].trim()) ? ['', 'enums:', ...body] : ['enums:', ...body];
+    save(abs, trailingNL ? [...lines, ...add, ''] : [...lines, ...add]);
+  } else {
+    if (findChild(lines, enumsIdx, enumName) >= 0) throw new Error(`enum ${enumName} already exists in ${rel}`);
+    lines.splice(blockEnd(lines, enumsIdx), 0, ...body);
+    save(abs, trailingNL ? [...lines, ''] : lines);
+  }
+  return { created: true, file: rel };
 }
 
 /** Delete a permissible value (and its whole block) from an enum. */

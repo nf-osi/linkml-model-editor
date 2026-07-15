@@ -362,6 +362,16 @@ function showOverview() {
   inspectorEmpty();
 }
 
+// #10: filter the graph to elements tagged into a LinkML subset (in_subset).
+function showSubset(subset) {
+  if (!subset) { showOverview(); return; }
+  CURRENT_SCOPE = `subset:${subset}`;
+  const ids = new Set([...STATE.nodes.values()].filter((d) => (d.inSubset || []).includes(subset)).map((d) => d.id));
+  renderElements(ids, {});
+  const s = $('#graph-scope'); if (s) s.innerHTML = `<b>${subset}</b> · subset (${ids.size})`;
+  inspectorEmpty();
+}
+
 function setScopeLabel(d) {
   const s = $('#graph-scope'); if (!s) return;
   s.innerHTML = !d ? '<b>Whole model</b> · class hierarchy'
@@ -398,6 +408,15 @@ function renderSidebar() {
 }
 function initSidebar() {
   renderSidebar();
+  // #10: subset filter — only shown for models that use in_subset
+  const subs = [...new Set([...STATE.nodes.values()].flatMap((d) => d.inSubset || []))].sort();
+  if (subs.length) {
+    const sel = el('select', { className: 'select', id: 'subset-filter', style: 'width:100%' });
+    sel.append(el('option', { value: '', textContent: `Filter by subset (${subs.length})…` }));
+    subs.forEach((s) => sel.append(el('option', { value: s, textContent: s })));
+    sel.addEventListener('change', () => showSubset(sel.value));
+    const legend = $('#legend'); if (legend) legend.after(sel);
+  }
   $('#entity-search').addEventListener('input', renderSidebar);
   $$('#legend .lg').forEach((b) => b.addEventListener('click', () => {
     const k = b.dataset.kind;
@@ -449,9 +468,92 @@ async function patchEntity(kind, name, field, value, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   try {
     const r = await api('PATCH', `/api/${kind}/${encodeURIComponent(name)}`, { field, value });
-    toast(`Saved → ${r.file}`, 'ok');
+    toast(r.noop ? 'cleared' : `Saved → ${r.file}`, 'ok'); refreshChanges();
   } catch (e) { toast(e.message, 'err'); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } }
+}
+
+function fieldNum(label, value, onSave) {
+  const input = el('input', { type: 'number', value: value === '' || value == null ? '' : value, style: 'width:140px' });
+  const btn = el('button', { className: 'btn btn-sm', textContent: 'Save' });
+  btn.addEventListener('click', () => onSave(input.value.trim(), btn));
+  return el('div', { className: 'field' }, el('label', { textContent: label }), el('div', { className: 'field inline' }, input, btn));
+}
+function toggleField(label, checked, onChange) {
+  const cb = el('input', { type: 'checkbox', checked: !!checked });
+  cb.addEventListener('change', () => onChange(cb.checked));
+  return el('div', { className: 'field inline' }, cb, el('label', { textContent: label, style: 'text-transform:none' }));
+}
+// Chip editor backed by /api/list (aliases, mapping predicates). Adds/removes live.
+function listChips(kind, name, field, items, placeholder) {
+  const wrap = el('div', { className: 'chips' });
+  let arr = [...(items || [])];
+  const draw = () => {
+    wrap.replaceChildren();
+    arr.forEach((it) => {
+      const x = el('button', { className: 'chip-x', textContent: '×', title: 'remove' });
+      x.addEventListener('click', async () => {
+        try { await api('POST', '/api/list', { kind, name, field, item: it, op: 'remove' }); arr = arr.filter((a) => a !== it); draw(); refreshChanges(); }
+        catch (e) { toast(e.message, 'err'); }
+      });
+      wrap.append(el('span', { className: 'chip' }, el('span', { textContent: it }), x));
+    });
+    const inp = el('input', { type: 'text', className: 'chip-add', placeholder });
+    const add = async () => { const v = inp.value.trim(); if (!v || arr.includes(v)) { inp.value = ''; return; } try { await api('POST', '/api/list', { kind, name, field, item: v }); arr = [...arr, v]; draw(); refreshChanges(); } catch (e) { toast(e.message, 'err'); } };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    wrap.append(inp);
+  };
+  draw();
+  return wrap;
+}
+function mappingsBlock(kind, name, mappings) {
+  const preds = [['exact_mappings', 'exact'], ['close_mappings', 'close'], ['narrow_mappings', 'narrow'], ['broad_mappings', 'broad'], ['related_mappings', 'related']];
+  const box = el('div', {});
+  for (const [f, lbl] of preds) {
+    const items = mappings?.[f] || [];
+    if (items.length) box.append(el('div', { className: 'map-row' }, el('span', { className: 'map-lbl', textContent: lbl }), listChips(kind, name, f, items, '+ CURIE')));
+  }
+  const sel = el('select', { className: 'select', style: 'max-width:110px' });
+  preds.forEach(([f, lbl]) => sel.append(el('option', { value: f, textContent: lbl })));
+  const inp = el('input', { type: 'text', placeholder: 'CURIE e.g. NCIT:C123' });
+  const add = el('button', { className: 'btn btn-sm', textContent: 'Add' });
+  add.addEventListener('click', async () => { const v = inp.value.trim(); if (!v) return; try { await api('POST', '/api/list', { kind, name, field: sel.value, item: v }); toast(`added ${sel.value}`, 'ok'); inp.value = ''; refreshChanges(); box.insertBefore(el('div', { className: 'map-row' }, el('span', { className: 'map-lbl', textContent: sel.options[sel.selectedIndex].text }), listChips(kind, name, sel.value, [v], '+ CURIE')), addRow); } catch (e) { toast(e.message, 'err'); } });
+  const addRow = el('div', { className: 'field inline', style: 'margin-top:6px' }, sel, inp, add);
+  box.append(addRow);
+  return el('div', { className: 'field' }, el('label', { textContent: 'Ontology mappings (SKOS)' }), box);
+}
+function subsetView(inSubset) {
+  if (!inSubset?.length) return null;
+  return el('div', { className: 'field' }, el('label', { textContent: 'Subsets' }),
+    el('div', { className: 'chips' }, ...inSubset.map((s) => el('span', { className: 'chip readonly', textContent: s }))));
+}
+function condSummary(c) {
+  if (!c) return '—';
+  const sc = c.slot_conditions || {};
+  const parts = Object.entries(sc).map(([s, cc]) => {
+    const bits = [];
+    if (cc.equals_string != null) bits.push(`= "${cc.equals_string}"`);
+    if (cc.equals_number != null) bits.push(`= ${cc.equals_number}`);
+    if (cc.required) bits.push('required');
+    if (cc.pattern) bits.push(`matches /${cc.pattern}/`);
+    if (cc.range) bits.push(`range ${cc.range}`);
+    if (Array.isArray(cc.any_of)) bits.push('any_of ' + cc.any_of.map((a) => a.equals_string ?? a.range).filter((x) => x != null).join(' | '));
+    return `${s} ${bits.join(', ') || 'present'}`;
+  });
+  return parts.join(' AND ') || '(complex)';
+}
+function rulesView(rules) {
+  if (!rules?.length) return null;
+  const box = el('div', { className: 'rules' });
+  rules.forEach((r, i) => box.append(el('div', { className: 'rule' },
+    el('b', { textContent: `Rule ${i + 1}: ` }),
+    document.createTextNode(`IF ${condSummary(r.preconditions)} THEN ${condSummary(r.postconditions)}`))));
+  return el('div', { className: 'field' }, el('label', { textContent: `Conditional rules (${rules.length})` }), box);
+}
+function uniqueKeysView(uk) {
+  if (!uk || !Object.keys(uk).length) return null;
+  const rows = Object.entries(uk).map(([k, v]) => `${k}: ${(v.unique_key_slots || []).join(' + ')}`);
+  return el('div', { className: 'field' }, el('label', { textContent: 'Unique keys' }), el('div', { className: 'muted', style: 'font-size:12px', textContent: rows.join(' · ') }));
 }
 
 function renderClassInspector(d) {
@@ -479,6 +581,16 @@ function renderClassInspector(d) {
   });
   body.append(el('div', { className: 'field' }, el('label', { textContent: `Slots (${slotEdges.length}) — ⚙ to constrain per template` }), slotsWrap,
     el('div', { className: 'field inline', style: 'margin-top:6px' }, addInput, addBtn)));
+  // mixins (#2) · rules (#5) · unique_keys (#11) · aliases (#9) · mappings (#7) · subsets (#10)
+  body.append(el('div', { className: 'insp-sec' }, el('div', { className: 'insp-sec-h', textContent: 'Structure & semantics' })));
+  if (d.mixins?.length) body.append(el('div', { className: 'field' }, el('label', { textContent: 'Mixins' }),
+    el('div', { className: 'chips' }, ...d.mixins.map((m) => { const c = el('span', { className: 'chip readonly clickable', textContent: m }); c.addEventListener('click', () => focusEntity(`class::${m}`)); return c; }))));
+  const rv = rulesView(d.rules); if (rv) body.append(rv);
+  const ukv = uniqueKeysView(d.uniqueKeys); if (ukv) body.append(ukv);
+  body.append(fieldText('class_uri', d.classUri, (v, b) => patchEntity('classes', d.name, 'class_uri', v, b)));
+  body.append(el('div', { className: 'field' }, el('label', { textContent: 'Aliases' }), listChips('classes', d.name, 'aliases', d.aliases, '+ alias')));
+  body.append(mappingsBlock('classes', d.name, d.mappings));
+  const ssc = subsetView(d.inSubset); if (ssc) body.append(ssc);
   ensureSlotDatalist();
   setInspector([inspectorHead(d)], [body]);
 }
@@ -550,6 +662,19 @@ function renderSlotInspector(d) {
   if ((d.ranges || []).some((r) => STATE.enumsByName.has(r))) {
     body.append(el('p', { className: 'muted', style: 'font-size:12px;margin-top:8px', textContent: 'Tip: this range is an enum — double-click its node to expand its values.' }));
   }
+  if (d.isAttribute) body.append(el('p', { className: 'muted', style: 'font-size:11.5px;margin-top:6px', textContent: 'Inline attribute — edits are written to its class.' }));
+  // Validation constraints (#4) · identity (#11) · aliases (#9) · mappings (#7) · subsets (#10)
+  body.append(el('div', { className: 'insp-sec' }, el('div', { className: 'insp-sec-h', textContent: 'Validation & semantics' })));
+  body.append(fieldText('Pattern (regex)', d.pattern, (v, b) => patchEntity('slots', d.name, 'pattern', v, b)));
+  if (d.structuredPattern) body.append(el('div', { className: 'field' }, el('label', { textContent: 'Structured pattern' }), el('input', { value: d.structuredPattern, readOnly: true, style: 'background:#f1f3f7' })));
+  body.append(fieldNum('Minimum value', d.minv, (v, b) => patchEntity('slots', d.name, 'minimum_value', v, b)));
+  body.append(fieldNum('Maximum value', d.maxv, (v, b) => patchEntity('slots', d.name, 'maximum_value', v, b)));
+  if (d.unit) body.append(el('div', { className: 'field' }, el('label', { textContent: 'Unit' }), el('input', { value: d.unit, readOnly: true, style: 'background:#f1f3f7' })));
+  body.append(toggleField('Identifier (unique id for its class)', d.identifier, (c) => patchEntity('slots', d.name, 'identifier', c)));
+  body.append(toggleField('Key', d.keyf, (c) => patchEntity('slots', d.name, 'key', c)));
+  body.append(el('div', { className: 'field' }, el('label', { textContent: 'Aliases' }), listChips('slots', d.name, 'aliases', d.aliases, '+ alias')));
+  body.append(mappingsBlock('slots', d.name, d.mappings));
+  const sss = subsetView(d.inSubset); if (sss) body.append(sss);
   setInspector([inspectorHead(d)], [body]);
 }
 
@@ -602,8 +727,13 @@ function renderEnumInspector(d) {
   const summary = el('p', { className: 'muted', style: 'font-size:12px; margin:0 0 10px', textContent: `${d.mappedCount}/${d.valueCount} values mapped to ontology terms (${pct}%).` });
   const addBtn = el('button', { className: 'btn btn-primary', style: 'width:100%', textContent: '＋ Add term (assisted)' });
   addBtn.addEventListener('click', () => openAddTerm(d.name));
+  const meta = el('details', { className: 'enum-meta' });
+  meta.append(el('summary', { textContent: 'aliases · mappings · subsets' }));
+  meta.append(el('div', { className: 'field' }, el('label', { textContent: 'Aliases' }), listChips('enums', d.name, 'aliases', d.aliases, '+ alias')));
+  meta.append(mappingsBlock('enums', d.name, d.mappings));
+  const sse = subsetView(d.inSubset); if (sse) meta.append(sse);
   const body = el('div', {});
-  setInspector([inspectorHead(d), summary, addBtn], [body]);
+  setInspector([inspectorHead(d), summary, addBtn, meta], [body]);
   renderValueList(body, d);
 }
 
@@ -619,6 +749,19 @@ function enumValueRow(enumNode, v) {
   const findBtn = el('button', { className: 'btn btn-sm', textContent: v.meaning ? 'Re-map' : 'Find mapping' });
   const sugg = el('div', { className: 'suggestions' });
   findBtn.addEventListener('click', () => suggestFor(enumNode, v, sugg, meaning));
+  if (v.deprecated) { row.classList.add('deprecated'); meaning.append(el('span', { className: 'dep-badge', textContent: 'deprecated', title: String(v.deprecated) })); }
+  // Deprecate (#8): mark deprecated (spec-aligned) instead of hard-deleting.
+  const depBtn = el('button', { className: 'btn btn-sm', textContent: v.deprecated ? 'Deprecated' : 'Deprecate', title: 'mark deprecated (keeps existing data valid) instead of deleting' });
+  depBtn.disabled = !!v.deprecated;
+  depBtn.addEventListener('click', async () => {
+    const reason = prompt(`Deprecate “${v.value}”. Optional reason / replacement:`, 'deprecated');
+    if (reason === null) return;
+    try {
+      await api('PATCH', `/api/enums/${encodeURIComponent(enumNode.name)}/value/${encodeURIComponent(v.value)}`, { field: 'deprecated', val: reason || 'deprecated' });
+      v.deprecated = reason || 'deprecated'; depBtn.textContent = 'Deprecated'; depBtn.disabled = true; row.classList.add('deprecated');
+      toast(`Deprecated “${v.value}”`, 'ok'); refreshChanges();
+    } catch (e) { toast(e.message, 'err'); }
+  });
   const removeBtn = el('button', { className: 'btn btn-sm', textContent: 'Remove', title: 'delete this value from the enum' });
   removeBtn.addEventListener('click', async () => {
     if (!confirm(`Remove “${v.value}” from ${enumNode.name}?\nThis deletes the permissible value from the source YAML (existing data using it would no longer validate).`)) return;
@@ -628,7 +771,7 @@ function enumValueRow(enumNode, v) {
       toast(`Removed “${v.value}”`, 'ok'); refreshChanges(); renderSidebar(); row.remove();
     } catch (e) { toast(e.message, 'err'); }
   });
-  row.append(el('div', { className: 'mini' }, findBtn, removeBtn), sugg);
+  row.append(el('div', { className: 'mini' }, findBtn, depBtn, removeBtn), sugg);
   return row;
 }
 
@@ -1021,6 +1164,26 @@ function initImportPanel() {
   $('#sel-all').addEventListener('click', () => toggleAllTerms(true));
   $('#sel-none').addEventListener('click', () => toggleAllTerms(false));
   $('#do-import').addEventListener('click', doImport);
+  // #6: bind to the ontology branch as a dynamic enum instead of freezing values
+  const dynBtn = el('button', { className: 'btn btn-sm', id: 'do-dynamic', textContent: '⤴ Bind as dynamic enum', title: 'Create a LinkML dynamic enum (reachable_from) bound to this branch — stays in sync, materialized at build time — instead of freezing static values' });
+  dynBtn.addEventListener('click', doDynamicEnum);
+  $('#do-import').after(dynBtn);
+}
+
+async function doDynamicEnum() {
+  if (!IMPORT.root) return toast('search and pick a root term first', 'err');
+  const name = $('#new-enum-name').value.trim();
+  const file = $('#new-enum-file').value;
+  if (!name) return toast('enter a new enum name (under "new enum")', 'err');
+  const ont = (IMPORT.root.ontology || $('#import-ont').value.trim() || '').toLowerCase();
+  const direct = $('input[name="depth"]:checked')?.value === 'direct';
+  const resBox = $('#import-result'); resBox.className = 'import-result'; resBox.textContent = 'creating dynamic enum…';
+  try {
+    const r = await api('POST', '/api/enums/dynamic', { name, file, description: `Dynamic enum: descendants of ${IMPORT.root.curie} (${IMPORT.root.label}).`, source_ontology: ont ? `obo:${ont}` : undefined, source_nodes: [IMPORT.root.curie], is_direct: direct });
+    resBox.classList.add('ok');
+    resBox.textContent = `✓ Created dynamic enum ${name} bound to ${IMPORT.root.curie} → ${r.file}. Values are resolved from ${ont || 'the ontology'} at build time (LinkML/OAK).`;
+    toast('dynamic enum written', 'ok'); refreshChanges(); await refreshModel();
+  } catch (e) { resBox.className = 'import-result err'; resBox.textContent = e.message; }
 }
 
 const IMPORT = { root: null, terms: [] };

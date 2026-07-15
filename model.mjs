@@ -103,6 +103,20 @@ function classifyRange(range, model) {
   return 'unknown';
 }
 
+const MAPPING_PREDS = ['exact_mappings', 'close_mappings', 'narrow_mappings', 'broad_mappings', 'related_mappings', 'mappings'];
+/** Collect any non-empty SKOS mapping predicate lists on a definition. */
+function mappingsOf(def) {
+  const out = {};
+  for (const p of MAPPING_PREDS) if (Array.isArray(def[p]) && def[p].length) out[p] = def[p];
+  return out;
+}
+const unitOf = (def) => {
+  const u = def.unit;
+  if (!u) return def.annotations?.unit?.value || '';
+  if (typeof u === 'string') return u;
+  return u.ucum_code || u.symbol || u.iec61672 || '';
+};
+
 /** Pull the list of range targets for a slot (handles any_of unions). */
 function slotRanges(def) {
   if (!def) return [];
@@ -140,6 +154,14 @@ export function buildGraph(model) {
       description: def.description || '',
       file: model.fileIndex[`classes:${name}`] || null,
       slotCount: (def.slots || []).length + Object.keys(def.attributes || {}).length,
+      mixins: def.mixins || [],
+      classUri: def.class_uri || '',
+      aliases: def.aliases || [],
+      inSubset: def.in_subset || [],
+      uniqueKeys: def.unique_keys || null,
+      rules: def.rules || [],
+      deprecated: def.deprecated || '',
+      mappings: mappingsOf(def),
     }});
   }
   for (const [name, def] of Object.entries(model.slots)) {
@@ -151,6 +173,20 @@ export function buildGraph(model) {
       required: !!def.required,
       ranges: slotRanges(def),
       file: model.fileIndex[`slots:${name}`] || null,
+      pattern: def.pattern || '',
+      structuredPattern: def.structured_pattern?.syntax || '',
+      minv: def.minimum_value ?? '',
+      maxv: def.maximum_value ?? '',
+      unit: unitOf(def),
+      identifier: !!def.identifier,
+      keyf: !!def.key,
+      multivalued: !!def.multivalued,
+      aliases: def.aliases || [],
+      inSubset: def.in_subset || [],
+      slotUri: def.slot_uri || '',
+      deprecated: def.deprecated || '',
+      mappings: mappingsOf(def),
+      isAttribute: !!(model.inlineOnly && model.inlineOnly.has(name)),
     }});
   }
   for (const [name, def] of Object.entries(model.enums)) {
@@ -165,6 +201,10 @@ export function buildGraph(model) {
       file: model.fileIndex[`enums:${name}`] || null,
       valueCount: vals.length,
       mappedCount: vals.filter(v => v?.meaning).length,
+      aliases: def.aliases || [],
+      inSubset: def.in_subset || [],
+      deprecated: def.deprecated || '',
+      mappings: mappingsOf(def),
     }});
   }
 
