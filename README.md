@@ -149,10 +149,17 @@ Shows **one scope at a time**, laid out as a hierarchy (not a force-network):
   any node to re-center the scope on it. Drag to pan, scroll to zoom.
   Colors: 🔵 class · 🟢 slot · 🟠 enum (dashed border = abstract class).
 - Select a node to **edit it** in the right panel:
-  - **Slot** — title, range, required, description; add the slot to many templates at once.
-  - **Class** — description; view/add slots.
-  - **Enum** — every permissible value with its mapping status; **+ Add term**;
-    **Find mapping** searches OLS and writes the chosen CURIE to `meaning:`.
+  - **Slot** — title, range, required, description, plus validation & semantics
+    (pattern, min/max, identifier/key, aliases, SKOS mappings); add the slot to many
+    templates at once.
+  - **Class** — description, `is_a`/mixins, abstract, `class_uri`, aliases, mappings;
+    view/add slots and per-template `slot_usage` overrides.
+  - **Enum** — every permissible value with its mapping status; **+ Add term**,
+    deprecate a value, or **Find mapping** (searches OLS, writes the CURIE to `meaning:`);
+    bind an ontology branch as a dynamic enum (`reachable_from`).
+
+  See **[`LINKML_COVERAGE.md`](LINKML_COVERAGE.md)** for the complete list of LinkML
+  metaslots the editor reads, edits, and exports — and the gaps still edited in source.
 
 ### Ontology Gaps (coverage)
 The real gap is usually a **missing permissible value**, not just an unmapped one.
@@ -219,6 +226,9 @@ cd editor && npm install && npm start
 | `model.mjs` | Merges `header.yaml` + `modules/**/*.yaml` (like the Makefile), indexes each class/slot/enum to its source file, builds the graph |
 | `patch.mjs` | Line-based, indentation-aware YAML patching — minimal diffs, repo-matching quote style |
 | `ontology.mjs` | EBI OLS4 client (search / descendants / term) |
+| `config.mjs` | Loads `model-editor.config.json`; falls back to the NF layout when absent |
+| `schematic.mjs` | Reads Sage schematic/DCA CSV models (the read-only source dialect) |
+| `linkml-export.mjs` | Exports any loaded model to a valid LinkML schema (schematic → LinkML migration) |
 | `public/` | Vanilla-JS front end (Cytoscape graph, edit forms, ontology tools) |
 
 No build step; no framework. `git diff` is your safety net.

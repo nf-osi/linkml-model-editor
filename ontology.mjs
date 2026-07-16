@@ -50,8 +50,10 @@ export async function searchOntology({ q, ontology = '', rows = 12, exact = fals
   const data = await getJson(`${OLS}/search?${params}`);
   let out = (data?.response?.docs || []).map(normTerm).filter(t => !t.obsolete);
   if (branchesOnly) {
-    const probed = await Promise.all(out.map(async (t) => ({ t, ok: await hasChildren({ ontology: t.ontology, iri: t.iri }) })));
-    out = probed.filter((p) => p.ok).map((p) => p.t).slice(0, rows);
+    // Use allSettled so a single failed child-probe (network hiccup, 404) doesn't
+    // reject the whole branch search; a term that can't be probed is treated as a leaf.
+    const probed = await Promise.allSettled(out.map(async (t) => ({ t, ok: await hasChildren({ ontology: t.ontology, iri: t.iri }) })));
+    out = probed.filter((p) => p.status === 'fulfilled' && p.value.ok).map((p) => p.value.t).slice(0, rows);
   }
   return out;
 }

@@ -11,13 +11,11 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
-import { dirname, resolve } from 'path';
+import { dirname, resolve, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, watch, mkdirSync, copyFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { exec, execFile } from 'child_process';
-import { existsSync as fexists } from 'fs';
-import { resolve as rpath } from 'path';
 import { CONFIG } from './config.mjs';
 import { loadModel, buildGraph, modelSummary, readSourceFile, classifyRange, slotRanges, ROOT } from './model.mjs';
 import { setScalarField, addEnumValues, createEnum, createClass, addDcaEntry, addListItem, removeListItem, createDynamicEnum, setSlotUsage, removeEnumValue } from './patch.mjs';
@@ -25,6 +23,10 @@ import { searchOntology, getDescendants, getTerm, getParents, domainHint } from 
 import { toLinkMLYaml, toLinkMLFiles, slugify } from './linkml-export.mjs';
 
 const KINDS = { classes: 'classes', slots: 'slots', enums: 'enums' };
+
+// Reject client-supplied paths that could escape the model ROOT: empty, parent
+// traversal (`..`), or absolute paths (which `resolve(ROOT, p)` would honor verbatim).
+const unsafeRel = (p) => !p || p.includes('..') || isAbsolute(p);
 function fileFor(kind, name) {
   const rel = loadModel().fileIndex[`${kind}:${name}`];
   if (!rel) throw new Error(`${kind}:${name} not found in model`);
@@ -211,7 +213,7 @@ app.get('/api/datatypes', wrap((req, res) => {
 app.post('/api/classes', wrap((req, res) => {
   const { name, file, def = {}, dca } = req.body || {};
   if (!name || !file) return res.status(400).json({ error: 'need name and file' });
-  if (file.includes('..')) return res.status(400).json({ error: 'bad file' });
+  if (unsafeRel(file)) return res.status(400).json({ error: 'bad file' });
   if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) return res.status(400).json({ error: 'class name must be alphanumeric (PascalCase), no spaces' });
   if (loadModel().classes[name]) return res.status(409).json({ error: `class ${name} already exists` });
   const result = createClass(file, name, def);
@@ -224,14 +226,14 @@ app.post('/api/classes', wrap((req, res) => {
 app.post('/api/enums', wrap((req, res) => {
   const { name, file, description = '', values = [] } = req.body || {};
   if (!name || !file) return res.status(400).json({ error: 'need name and file' });
-  if (file.includes('..')) return res.status(400).json({ error: 'bad file' });
+  if (unsafeRel(file)) return res.status(400).json({ error: 'bad file' });
   if (loadModel().enums[name]) return res.status(409).json({ error: `enum ${name} already exists` });
   res.json({ ok: true, ...createEnum(file, name, { description, values }) });
 }));
 
 app.get('/api/file', wrap((req, res) => {
   const rel = req.query.path;
-  if (!rel || rel.includes('..')) return res.status(400).json({ error: 'bad path' });
+  if (unsafeRel(rel)) return res.status(400).json({ error: 'bad path' });
   res.json({ path: rel, content: readSourceFile(rel) });
 }));
 
@@ -555,15 +557,15 @@ app.post('/api/pr', wrap(async (req, res) => {
   const lines = status.split('\n').filter(Boolean);
   if (!lines.length) return res.status(400).json({ error: 'No model changes to submit.' });
 
-  const wt = rpath(tmpdir(), `nf-pr-${Date.now()}`);
+  const wt = resolve(tmpdir(), `nf-pr-${Date.now()}`);
   try {
     await run('git', ['fetch', 'origin', base]).catch(() => {});      // best-effort, ok if offline
     await run('git', ['worktree', 'add', '-b', branch, wt, `origin/${base}`]);
     for (const l of lines) {                                          // mirror each model change into the worktree
       const xy = l.slice(0, 2); const p = l.slice(3);
-      const dst = rpath(wt, p);
+      const dst = resolve(wt, p);
       if (xy.includes('D')) { try { rmSync(dst); } catch {} }
-      else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(rpath(ROOT, p), dst); }
+      else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(resolve(ROOT, p), dst); }
     }
     await run('git', ['-C', wt, 'add', '-A', '--', ...MODEL_PATHS]);
     await run('git', ['-C', wt, 'commit', '-m', title + (body ? `\n\n${body}` : '')]);
@@ -625,7 +627,7 @@ app.get('/api/diff', wrap((req, res) => {
 app.get('/api/diff/file', wrap((req, res) => {
   const base = safeBase(req.query.base);
   const path = req.query.path;
-  if (!path || path.includes('..')) return res.status(400).json({ error: 'bad path' });
+  if (unsafeRel(path)) return res.status(400).json({ error: 'bad path' });
   const cmd = req.query.untracked === 'true'
     ? `diff --no-index -- /dev/null ${JSON.stringify(path)}`
     : `diff ${base} -- ${JSON.stringify(path)}`;
@@ -634,8 +636,8 @@ app.get('/api/diff/file', wrap((req, res) => {
 
 // ---- One-click build / validate ----
 function pythonBin() {
-  const venv = rpath(ROOT, '.venv', 'bin', 'python');
-  return fexists(venv) ? venv : 'python3';
+  const venv = resolve(ROOT, '.venv', 'bin', 'python');
+  return existsSync(venv) ? venv : 'python3';
 }
 const TASK_LABELS = { ttl: 'Rebuild model', schemas: 'Generate schemas', limits: 'Check limits', tests: 'Run tests', lint: 'LinkML lint' };
 const TASKS = Object.fromEntries(Object.entries(CONFIG.build).map(([k, cmd]) => [k, {
