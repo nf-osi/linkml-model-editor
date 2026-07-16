@@ -18,7 +18,7 @@ import { tmpdir } from 'os';
 import { exec, execFile } from 'child_process';
 import { CONFIG } from './config.mjs';
 import { loadModel, buildGraph, modelSummary, readSourceFile, classifyRange, slotRanges, ROOT } from './model.mjs';
-import { setScalarField, addEnumValues, createEnum, createClass, addDcaEntry, addListItem, removeListItem, createDynamicEnum, setSlotUsage, removeEnumValue } from './patch.mjs';
+import { setScalarField, addEnumValues, createEnum, createClass, addDcaEntry, addListItem, removeListItem, createDynamicEnum, setSlotUsage, removeEnumValue, addClassRule, updateClassRule, removeClassRule } from './patch.mjs';
 import { searchOntology, getDescendants, getTerm, getParents, domainHint } from './ontology.mjs';
 import { toLinkMLYaml, toLinkMLFiles, slugify } from './linkml-export.mjs';
 
@@ -123,6 +123,28 @@ app.post('/api/classes/:name/slot-usage', wrap((req, res) => {
   const rel = fileFor('classes', name);
   setSlotUsage(rel, name, slot, { ranges: Array.isArray(ranges) ? ranges : undefined, required });
   res.json({ ok: true, file: rel });
+}));
+
+// Conditional `rules` (issue #5): add / edit / delete one if-then rule on a class.
+// Body: { rule: { description, preconditions:{slot_conditions}, postconditions:{slot_conditions} } }.
+app.post('/api/classes/:name/rules', wrap((req, res) => {
+  const { name } = req.params;
+  const { rule } = req.body || {};
+  if (!rule || typeof rule !== 'object') return res.status(400).json({ error: 'missing rule' });
+  const rel = fileFor('classes', name);
+  res.json({ ok: true, file: rel, ...addClassRule(rel, name, rule) });
+}));
+app.put('/api/classes/:name/rules/:index', wrap((req, res) => {
+  const { name, index } = req.params;
+  const { rule } = req.body || {};
+  if (!rule || typeof rule !== 'object') return res.status(400).json({ error: 'missing rule' });
+  const rel = fileFor('classes', name);
+  res.json({ ok: true, file: rel, ...updateClassRule(rel, name, parseInt(index, 10), rule) });
+}));
+app.delete('/api/classes/:name/rules/:index', wrap((req, res) => {
+  const { name, index } = req.params;
+  const rel = fileFor('classes', name);
+  res.json({ ok: true, file: rel, ...removeClassRule(rel, name, parseInt(index, 10)) });
 }));
 
 // Append a slot reference to a class's `slots:` list.

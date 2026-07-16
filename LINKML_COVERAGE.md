@@ -24,7 +24,7 @@ layer (server/`patch.mjs`) but no UI control yet · ❌ not handled.
 | `exact/close/narrow/broad/related_mappings` | ✅ | SKOS predicate editor. |
 | `annotations` | 🔌 | NF-specific keys (`module`, `dataType`) only; generic annotations not exposed. |
 | `unique_keys` | 📖 | Displayed; no builder. |
-| `rules` | 📖 | English summary; no visual builder. |
+| `rules` | ✅ | English summary + visual if-then builder (add/edit/delete); `any_of`-based rules stay display-only. |
 | `in_subset` | 📖 | Displayed; used for subset filtering. |
 | `deprecated` | 📖 | |
 
@@ -93,8 +93,8 @@ all well covered. The gaps worth closing, most impactful first:
 5. **`ifabsent` default values.** Lets curation tooling auto-populate sensible defaults.
 6. **Permissible-value-level mappings.** Some values need their own exact/broad mappings
    beyond a single `meaning:`.
-7. **Visual builders for `rules` / `unique_keys` / `structured_pattern`.** Currently
-   display-only; edit these in the source or the terminal.
+7. **Visual builders for `unique_keys` / `structured_pattern`.** Currently
+   display-only; edit these in the source or the terminal. (`rules` now has a builder.)
 
 Everything marked ❌ or 📖 above can still be edited via the in-app **Terminal**
 (`claude` / any CLI) or directly in the `.yaml` source — the editor never blocks the
