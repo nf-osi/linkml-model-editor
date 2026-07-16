@@ -411,7 +411,7 @@ function initSidebar() {
   // #10: subset filter — only shown for models that use in_subset
   const subs = [...new Set([...STATE.nodes.values()].flatMap((d) => d.inSubset || []))].sort();
   if (subs.length) {
-    const sel = el('select', { className: 'select', id: 'subset-filter', style: 'width:100%' });
+    const sel = el('select', { className: 'select', id: 'subset-filter', style: 'width:100%; flex:0 0 auto' });
     sel.append(el('option', { value: '', textContent: `Filter by subset (${subs.length})…` }));
     subs.forEach((s) => sel.append(el('option', { value: s, textContent: s })));
     sel.addEventListener('change', () => showSubset(sel.value));
