@@ -463,4 +463,141 @@ export function setSlotUsage(rel, className, slot, { ranges, required } = {}) {
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+//  Conditional `rules` (issue #5) — flush-style rendering + surgical add/edit/delete
+//  of individual rule items so untouched rules never reformat.
+// ---------------------------------------------------------------------------
+
+/** Render one slot-condition object as flush YAML lines at `indent`. */
+function renderCondition(cond, indent) {
+  const out = [];
+  for (const [k, v] of Object.entries(cond || {})) {
+    if (v == null || v === '') continue;
+    if (Array.isArray(v)) {                       // none_of / any_of: list of small objects
+      if (!v.length) continue;
+      out.push(' '.repeat(indent) + `${k}:`);
+      for (const item of v) {
+        const entries = Object.entries(item || {}).filter(([, x]) => x != null && x !== '');
+        if (!entries.length) continue;
+        const [fk, fv] = entries[0];
+        out.push(' '.repeat(indent) + `- ${fk}: ${fmtScalar(fv)}`);
+        for (const [ek, ev] of entries.slice(1)) out.push(' '.repeat(indent + 2) + `${ek}: ${fmtScalar(ev)}`);
+      }
+    } else {
+      out.push(' '.repeat(indent) + `${k}: ${fmtScalar(v)}`);
+    }
+  }
+  return out;
+}
+
+/** Render one rule as flush YAML lines; `dashIndent` is where the `- ` sits. */
+function renderRule(rule, dashIndent) {
+  const ci = dashIndent + 2;                       // continuation-key indent within the item
+  const out = [' '.repeat(dashIndent) + `- description: ${fmtScalar(rule.description || '')}`];
+  for (const side of ['preconditions', 'postconditions']) {
+    const sc = rule[side] && rule[side].slot_conditions;
+    if (!sc || !Object.keys(sc).length) continue;
+    out.push(' '.repeat(ci) + `${side}:`);
+    out.push(' '.repeat(ci + 2) + `slot_conditions:`);
+    for (const [slot, cond] of Object.entries(sc)) {
+      out.push(' '.repeat(ci + 4) + `${quoteKey(slot)}:`);
+      out.push(...renderCondition(cond, ci + 6));
+    }
+  }
+  return out;
+}
+
+/** Resolve a class's `rules:` key line (rulesIdx = -1 if absent). */
+function locateRules(lines, className) {
+  const classesIdx = findTopKey(lines, 'classes');
+  if (classesIdx < 0) throw new Error(`no classes: block`);
+  const classIdx = findChild(lines, classesIdx, className);
+  if (classIdx < 0) throw new Error(`class ${className} not found`);
+  return { classIdx, rulesIdx: findChild(lines, classIdx, 'rules') };
+}
+
+/** Line-spans (start incl., end excl.) of each rule item under a `rules:` key.
+ *  Handles the repo's flush block sequences (dash at the key's own indent). */
+function ruleItemSpans(lines, rulesIdx) {
+  const keyIndent = indentOf(lines[rulesIdx]);
+  let itemIndent = null;
+  const starts = [];
+  let end = lines.length;
+  for (let i = rulesIdx + 1; i < lines.length; i++) {
+    const ln = lines[i];
+    if (isBlank(ln) || isComment(ln)) continue;
+    const ind = indentOf(ln);
+    if (itemIndent == null) {
+      if (isListItem(ln) && ind >= keyIndent) itemIndent = ind;
+      else { end = i; break; }                     // empty rules block
+    }
+    if (ind < itemIndent) { end = i; break; }       // dedent out of the block
+    if (ind === itemIndent && !isListItem(ln)) { end = i; break; } // sibling key (annotations, slot_usage…)
+    if (ind === itemIndent && isListItem(ln)) starts.push(i);
+    // ind > itemIndent → continuation of the current item
+  }
+  const spans = starts.map((s, k) => {
+    let e = k + 1 < starts.length ? starts[k + 1] : end;
+    while (e > s + 1 && (isBlank(lines[e - 1]) || isComment(lines[e - 1]))) e--;
+    return { start: s, end: e };
+  });
+  return { itemIndent: itemIndent == null ? keyIndent : itemIndent, spans, blockEnd: end };
+}
+
+/** Append a rule to a class's `rules:` block (creating the block if needed). */
+export function addClassRule(rel, className, rule) {
+  const { abs, text } = load(rel);
+  if (text == null) throw new Error(`file not found: ${rel}`);
+  const trailingNL = text.endsWith('\n');
+  const lines = text.replace(/\n$/, '').split('\n');
+  const { classIdx, rulesIdx } = locateRules(lines, className);
+  if (rulesIdx < 0) {
+    const cfi = childIndent(lines, classIdx) ?? indentOf(lines[classIdx]) + 2;
+    const at = blockEnd(lines, classIdx);
+    lines.splice(at, 0, ' '.repeat(cfi) + 'rules:', ...renderRule(rule, cfi));
+    save(abs, trailingNL ? [...lines, ''] : lines);
+    return { changed: true, action: 'created' };
+  }
+  const { itemIndent, blockEnd: bEnd } = ruleItemSpans(lines, rulesIdx);
+  lines.splice(bEnd, 0, ...renderRule(rule, itemIndent));
+  save(abs, trailingNL ? [...lines, ''] : lines);
+  return { changed: true, action: 'appended' };
+}
+
+/** Replace the rule at `index` (0-based) in a class's `rules:` block. */
+export function updateClassRule(rel, className, index, rule) {
+  const { abs, text } = load(rel);
+  if (text == null) throw new Error(`file not found: ${rel}`);
+  const trailingNL = text.endsWith('\n');
+  const lines = text.replace(/\n$/, '').split('\n');
+  const { rulesIdx } = locateRules(lines, className);
+  if (rulesIdx < 0) throw new Error(`class ${className} has no rules`);
+  const { itemIndent, spans } = ruleItemSpans(lines, rulesIdx);
+  if (index < 0 || index >= spans.length) throw new Error(`rule index ${index} out of range`);
+  const { start, end } = spans[index];
+  lines.splice(start, end - start, ...renderRule(rule, itemIndent));
+  save(abs, trailingNL ? [...lines, ''] : lines);
+  return { changed: true };
+}
+
+/** Delete the rule at `index`; drops the `rules:` key if it becomes empty. */
+export function removeClassRule(rel, className, index) {
+  const { abs, text } = load(rel);
+  if (text == null) throw new Error(`file not found: ${rel}`);
+  const trailingNL = text.endsWith('\n');
+  const lines = text.replace(/\n$/, '').split('\n');
+  const { classIdx, rulesIdx } = locateRules(lines, className);
+  if (rulesIdx < 0) throw new Error(`class ${className} has no rules`);
+  const { spans } = ruleItemSpans(lines, rulesIdx);
+  if (index < 0 || index >= spans.length) throw new Error(`rule index ${index} out of range`);
+  const { start, end } = spans[index];
+  lines.splice(start, end - start);
+  if (spans.length === 1) {                         // was the only rule → drop the empty key
+    const rIdx = findChild(lines, classIdx, 'rules');
+    if (rIdx >= 0 && childIndent(lines, rIdx) == null) lines.splice(rIdx, 1);
+  }
+  save(abs, trailingNL ? [...lines, ''] : lines);
+  return { changed: true };
+}
+
 export { keyOf, findPath, findChild, blockEnd, childIndent };

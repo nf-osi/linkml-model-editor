@@ -464,6 +464,14 @@ body.read-only #new-class-btn { display: none !important; }
 .map-lbl { font: 600 10.5px "IBM Plex Mono", monospace; text-transform: uppercase; color: var(--faint); min-width: 52px; }
 .rules { display: flex; flex-direction: column; gap: 6px; }
 .rule { font-size: 12px; background: #f6f3ec; border-left: 3px solid var(--enum); padding: 6px 10px; border-radius: 0 4px 4px 0; }
+.rule-desc { font-size: 11.5px; color: var(--ink-soft); margin-bottom: 3px; }
+.rule-section { margin: 10px 0; }
+.rule-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.rule-row { display: flex; align-items: center; gap: 6px; }
+.rule-row .rule-slot { flex: 1 1 30%; min-width: 90px; }
+.rule-row .rule-type { flex: 0 0 auto; max-width: 150px; }
+.rule-row .rule-val { flex: 1 1 30%; min-width: 70px; }
+.rule-row input, .rule-row select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--rule); border-radius: 4px; }
 .enum-meta { margin: 8px 0; border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; }
 .enum-meta > summary { cursor: pointer; font-size: 12px; color: var(--ink-soft); }
 .val-row.deprecated { opacity: .6; }

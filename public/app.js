@@ -527,28 +527,82 @@ function subsetView(inSubset) {
   return el('div', { className: 'field' }, el('label', { textContent: 'Subsets' }),
     el('div', { className: 'chips' }, ...inSubset.map((s) => el('span', { className: 'chip readonly', textContent: s }))));
 }
+function describeCond(slot, cc) {
+  const bits = [];
+  if (cc.value_presence === 'PRESENT') bits.push('is provided');
+  if (cc.value_presence === 'ABSENT') bits.push('is empty');
+  if (cc.equals_string != null) bits.push(`= "${cc.equals_string}"`);
+  if (cc.equals_number != null) bits.push(`= ${cc.equals_number}`);
+  if (cc.required) bits.push('required');
+  if (cc.pattern) bits.push(`matches /${cc.pattern}/`);
+  if (cc.range) bits.push(`range ${cc.range}`);
+  if (cc.minimum_value != null) bits.push(`≥ ${cc.minimum_value}`);
+  if (cc.maximum_value != null) bits.push(`≤ ${cc.maximum_value}`);
+  if (Array.isArray(cc.none_of)) bits.push('not ' + cc.none_of.map((a) => a.equals_string ?? a.range).filter((x) => x != null).map((x) => `"${x}"`).join(' / '));
+  if (Array.isArray(cc.any_of)) bits.push('any of ' + cc.any_of.map((a) => a.equals_string ?? a.range).filter((x) => x != null).join(' | '));
+  return `${slot} ${bits.join(', ') || 'present'}`;
+}
 function condSummary(c) {
   if (!c) return '—';
   const sc = c.slot_conditions || {};
-  const parts = Object.entries(sc).map(([s, cc]) => {
-    const bits = [];
-    if (cc.equals_string != null) bits.push(`= "${cc.equals_string}"`);
-    if (cc.equals_number != null) bits.push(`= ${cc.equals_number}`);
-    if (cc.required) bits.push('required');
-    if (cc.pattern) bits.push(`matches /${cc.pattern}/`);
-    if (cc.range) bits.push(`range ${cc.range}`);
-    if (Array.isArray(cc.any_of)) bits.push('any_of ' + cc.any_of.map((a) => a.equals_string ?? a.range).filter((x) => x != null).join(' | '));
-    return `${s} ${bits.join(', ') || 'present'}`;
-  });
+  const parts = Object.entries(sc).map(([s, cc]) => describeCond(s, cc));
   return parts.join(' AND ') || '(complex)';
 }
-function rulesView(rules) {
-  if (!rules?.length) return null;
+
+// Constructs the visual builder can round-trip. A rule using anything else stays
+// display-only (edit-in-YAML) so we never silently drop e.g. an any_of union.
+const RULE_SUPPORTED = new Set(['value_presence', 'equals_string', 'equals_number', 'maximum_value', 'minimum_value', 'pattern', 'required', 'none_of']);
+function ruleIsEditable(rule) {
+  for (const side of ['preconditions', 'postconditions']) {
+    const s = rule[side];
+    if (!s) continue;
+    if (Object.keys(s).some((k) => k !== 'slot_conditions')) return false; // expression_conditions etc.
+    for (const cc of Object.values(s.slot_conditions || {})) {
+      for (const k of Object.keys(cc)) {
+        if (!RULE_SUPPORTED.has(k)) return false;
+        if (k === 'value_presence' && !['PRESENT', 'ABSENT'].includes(cc[k])) return false;
+        if (k === 'none_of' && cc.none_of.some((a) => Object.keys(a).some((kk) => kk !== 'equals_string'))) return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Editable rules section for the class inspector: plain-English rules + per-rule
+// edit/delete and an "add rule" launcher for the visual builder.
+function rulesSection(d) {
+  const rules = d.rules || [];
+  const wrap = el('div', { className: 'field' });
+  wrap.append(el('label', { textContent: `Conditional rules (${rules.length})` }));
   const box = el('div', { className: 'rules' });
-  rules.forEach((r, i) => box.append(el('div', { className: 'rule' },
-    el('b', { textContent: `Rule ${i + 1}: ` }),
-    document.createTextNode(`IF ${condSummary(r.preconditions)} THEN ${condSummary(r.postconditions)}`))));
-  return el('div', { className: 'field' }, el('label', { textContent: `Conditional rules (${rules.length})` }), box);
+  const ro = document.body.classList.contains('read-only');
+  if (!rules.length) box.append(el('div', { className: 'muted', style: 'font-size:12px', textContent: 'No conditional rules on this class yet.' }));
+  rules.forEach((r, i) => {
+    const row = el('div', { className: 'rule' },
+      r.description ? el('div', { className: 'rule-desc', textContent: r.description }) : '',
+      el('div', {}, el('b', { textContent: 'IF ' }), document.createTextNode(condSummary(r.preconditions)),
+        el('b', { textContent: ' THEN ' }), document.createTextNode(condSummary(r.postconditions))));
+    if (!ro) {
+      const editable = ruleIsEditable(r);
+      const edit = el('button', { className: 'btn btn-sm', textContent: editable ? 'Edit' : 'Edit in YAML', disabled: !editable, title: editable ? '' : 'Uses a construct (e.g. any_of) the builder can\'t edit — change it in the source YAML.' });
+      if (editable) edit.addEventListener('click', () => openRuleBuilder(d.name, r, i));
+      const del = el('button', { className: 'btn btn-sm', textContent: 'Delete' });
+      del.addEventListener('click', async () => {
+        if (!confirm(`Delete rule ${i + 1} on ${d.name}?`)) return;
+        try { const res = await api('DELETE', `/api/classes/${encodeURIComponent(d.name)}/rules/${i}`); toast(`Deleted rule → ${res.file}`, 'ok'); refreshChanges(); await refreshModel(`class::${d.name}`); }
+        catch (e) { toast(e.message, 'err'); }
+      });
+      row.append(el('div', { className: 'mini', style: 'margin-top:6px' }, edit, del));
+    }
+    box.append(row);
+  });
+  wrap.append(box);
+  if (!ro) {
+    const add = el('button', { className: 'btn btn-sm', style: 'margin-top:6px', textContent: '＋ Add rule' });
+    add.addEventListener('click', () => openRuleBuilder(d.name));
+    wrap.append(add);
+  }
+  return wrap;
 }
 function uniqueKeysView(uk) {
   if (!uk || !Object.keys(uk).length) return null;
@@ -585,7 +639,7 @@ function renderClassInspector(d) {
   body.append(el('div', { className: 'insp-sec' }, el('div', { className: 'insp-sec-h', textContent: 'Structure & semantics' })));
   if (d.mixins?.length) body.append(el('div', { className: 'field' }, el('label', { textContent: 'Mixins' }),
     el('div', { className: 'chips' }, ...d.mixins.map((m) => { const c = el('span', { className: 'chip readonly clickable', textContent: m }); c.addEventListener('click', () => focusEntity(`class::${m}`)); return c; }))));
-  const rv = rulesView(d.rules); if (rv) body.append(rv);
+  body.append(rulesSection(d));
   const ukv = uniqueKeysView(d.uniqueKeys); if (ukv) body.append(ukv);
   body.append(fieldText('class_uri', d.classUri, (v, b) => patchEntity('classes', d.name, 'class_uri', v, b)));
   body.append(el('div', { className: 'field' }, el('label', { textContent: 'Aliases' }), listChips('classes', d.name, 'aliases', d.aliases, '+ alias')));
@@ -1548,6 +1602,133 @@ function openApplySlot(slotName) {
     } catch (e) { toast(e.message, 'err'); apply.disabled = false; apply.textContent = 'Add to selected'; }
   });
   m.foot.append(apply, el('span', { style: 'flex:1' }), el('button', { className: 'btn btn-sm', textContent: 'Cancel', onclick: m.close }));
+}
+
+// ============================================================
+//  RULE BUILDER (#5) — author native LinkML if-then `rules`
+// ============================================================
+// Each builder row is one condition on one slot; rows sharing a slot merge into a
+// single slot_conditions entry (so "provided" + "not Unknown" become one condition).
+const RULE_COND_TYPES = [
+  { key: 'present',       label: 'is provided',      input: null },
+  { key: 'absent',        label: 'is empty',         input: null },
+  { key: 'equals',        label: 'equals (text)',    input: 'text' },
+  { key: 'not_equals',    label: 'does not equal',   input: 'text' },
+  { key: 'equals_number', label: 'equals (number)',  input: 'number' },
+  { key: 'max',           label: '≤ maximum',        input: 'number' },
+  { key: 'min',           label: '≥ minimum',        input: 'number' },
+  { key: 'pattern',       label: 'matches regex',    input: 'text' },
+  { key: 'required',      label: 'is required',      input: null },
+];
+const RULE_TYPE_BY_KEY = Object.fromEntries(RULE_COND_TYPES.map((t) => [t.key, t]));
+
+function rowsToConditions(rows) {
+  const sc = {};
+  for (const r of rows) {
+    if (!r.slot) continue;
+    const c = (sc[r.slot] ??= {});
+    switch (r.type) {
+      case 'present': c.value_presence = 'PRESENT'; break;
+      case 'absent': c.value_presence = 'ABSENT'; break;
+      case 'equals': c.equals_string = r.value; break;
+      case 'not_equals': (c.none_of ??= []).push({ equals_string: r.value }); break;
+      case 'equals_number': c.equals_number = Number(r.value); break;
+      case 'max': c.maximum_value = Number(r.value); break;
+      case 'min': c.minimum_value = Number(r.value); break;
+      case 'pattern': c.pattern = r.value; break;
+      case 'required': c.required = true; break;
+    }
+  }
+  return Object.keys(sc).length ? { slot_conditions: sc } : null;
+}
+function conditionsToRows(side) {
+  const rows = [];
+  const sc = side?.slot_conditions || {};
+  for (const [slot, cc] of Object.entries(sc)) {
+    if (cc.value_presence === 'PRESENT') rows.push({ slot, type: 'present', value: '' });
+    if (cc.value_presence === 'ABSENT') rows.push({ slot, type: 'absent', value: '' });
+    if (cc.equals_string != null) rows.push({ slot, type: 'equals', value: cc.equals_string });
+    if (cc.equals_number != null) rows.push({ slot, type: 'equals_number', value: cc.equals_number });
+    if (cc.maximum_value != null) rows.push({ slot, type: 'max', value: cc.maximum_value });
+    if (cc.minimum_value != null) rows.push({ slot, type: 'min', value: cc.minimum_value });
+    if (cc.pattern) rows.push({ slot, type: 'pattern', value: cc.pattern });
+    if (cc.required) rows.push({ slot, type: 'required', value: '' });
+    if (Array.isArray(cc.none_of)) for (const a of cc.none_of) if (a.equals_string != null) rows.push({ slot, type: 'not_equals', value: a.equals_string });
+  }
+  return rows;
+}
+
+function openRuleBuilder(className, rule = null, index = null) {
+  ensureSlotDatalist();
+  const editing = index != null;
+  const m = openModal({ title: editing ? `Edit rule on ${className}` : `Add rule to ${className}`,
+    subtitle: 'IF the preconditions hold, THEN the postconditions are enforced (native LinkML rules).', width: '640px' });
+
+  const descI = el('textarea', { placeholder: 'Plain-English description, e.g. "If age is provided, ageUnit must be provided"', style: 'min-height:48px' });
+  if (rule?.description) descI.value = rule.description;
+
+  const mkSection = (title, help, initialRows) => {
+    const rowsWrap = el('div', { className: 'rule-rows' });
+    const rows = [];
+    const addRow = (init = {}) => {
+      const slotI = el('input', { type: 'text', className: 'rule-slot', placeholder: 'slot…', value: init.slot || '' });
+      slotI.setAttribute('list', 'slot-options');
+      const typeSel = el('select', { className: 'select rule-type' });
+      RULE_COND_TYPES.forEach((t) => typeSel.append(el('option', { value: t.key, textContent: t.label })));
+      typeSel.value = init.type || 'present';
+      const valI = el('input', { type: 'text', className: 'rule-val', placeholder: 'value', value: init.value ?? '' });
+      const syncVal = () => { const t = RULE_TYPE_BY_KEY[typeSel.value]; valI.style.display = t.input ? '' : 'none'; valI.type = t.input === 'number' ? 'number' : 'text'; };
+      typeSel.addEventListener('change', syncVal); syncVal();
+      const rm = el('button', { className: 'chip-x', textContent: '×', title: 'remove condition' });
+      const rowEl = el('div', { className: 'rule-row' }, slotI, typeSel, valI, rm);
+      const entry = { get slot() { return slotI.value.trim(); }, get type() { return typeSel.value; }, get value() { return valI.value.trim(); }, el: rowEl };
+      rm.addEventListener('click', () => { const k = rows.indexOf(entry); if (k >= 0) rows.splice(k, 1); rowEl.remove(); });
+      rows.push(entry); rowsWrap.append(rowEl);
+    };
+    (initialRows.length ? initialRows : []).forEach(addRow);
+    const addBtn = el('button', { className: 'btn btn-sm', textContent: '＋ Add condition' });
+    addBtn.addEventListener('click', () => addRow());
+    const sec = el('div', { className: 'rule-section' },
+      el('div', { className: 'insp-sec-h', textContent: title }),
+      el('div', { className: 'muted', style: 'font-size:11.5px;margin:2px 0 6px', textContent: help }),
+      rowsWrap, addBtn);
+    return { sec, rows };
+  };
+
+  const pre = mkSection('IF — preconditions', 'When these conditions are all met, the rule applies. Leave empty for a rule that always applies.', rule ? conditionsToRows(rule.preconditions) : []);
+  const post = mkSection('THEN — postconditions', 'What must hold when the rule applies.', rule ? conditionsToRows(rule.postconditions) : []);
+  const warn = el('div', { className: 'warn-line' }); warn.style.display = 'none';
+  m.body.append(labeledField('Description', descI), pre.sec, post.sec, warn);
+
+  const save = el('button', { className: 'btn btn-primary', textContent: editing ? 'Save rule' : 'Add rule' });
+  save.addEventListener('click', async () => {
+    warn.style.display = 'none';
+    const fail = (msg) => { warn.style.display = 'flex'; warn.textContent = msg; };
+    const preRows = pre.rows.map((r) => ({ slot: r.slot, type: r.type, value: r.value }));
+    const postRows = post.rows.map((r) => ({ slot: r.slot, type: r.type, value: r.value }));
+    const needsVal = (r) => RULE_TYPE_BY_KEY[r.type].input && r.value === '';
+    for (const r of [...preRows, ...postRows]) {
+      if (!r.slot) return fail('Every condition needs a slot.');
+      if (needsVal(r)) return fail(`Condition "${RULE_TYPE_BY_KEY[r.type].label}" on ${r.slot} needs a value.`);
+      if (RULE_TYPE_BY_KEY[r.type].input === 'number' && Number.isNaN(Number(r.value))) return fail(`${r.slot}: "${r.value}" is not a number.`);
+    }
+    const postC = rowsToConditions(postRows);
+    if (!postC) return fail('A rule needs at least one THEN (postcondition).');
+    const built = { description: descI.value.trim() || undefined };
+    const preC = rowsToConditions(preRows); if (preC) built.preconditions = preC;
+    built.postconditions = postC;
+    save.disabled = true; save.textContent = 'Saving…';
+    try {
+      const r = editing
+        ? await api('PUT', `/api/classes/${encodeURIComponent(className)}/rules/${index}`, { rule: built })
+        : await api('POST', `/api/classes/${encodeURIComponent(className)}/rules`, { rule: built });
+      toast(`${editing ? 'Updated' : 'Added'} rule → ${r.file}`, 'ok');
+      refreshChanges(); m.close();
+      await refreshModel(`class::${className}`);
+    } catch (e) { fail(e.message); save.disabled = false; save.textContent = editing ? 'Save rule' : 'Add rule'; }
+  });
+  m.foot.append(save, el('span', { className: 'muted', style: 'font-size:12px', textContent: 'writes classes › rules' }),
+    el('span', { style: 'flex:1' }), el('button', { className: 'btn btn-sm', textContent: 'Cancel', onclick: m.close }));
 }
 
 // ============================================================
